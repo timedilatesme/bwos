@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BWOS</title>
+  <link rel="icon" href="img/bwos.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body class="booting">
+  <!-- Full-bleed artwork of whatever is focused -->
+  <div id="bg" aria-hidden="true">
+    <div class="bg-layer"></div>
+    <div class="bg-layer"></div>
+    <div class="bg-ambient"></div>
+    <div class="bg-scrim"></div>
+  </div>
+
+  <header id="topbar">
+    <div class="brand">
+      <img src="img/bwos.png" alt="">
+      <span>BWOS</span>
+    </div>
+    <nav id="tabs" data-group="tabs">
+      <button class="tab" data-focus data-tab="home">Home</button>
+      <button class="tab" data-focus data-tab="foryou">For You</button>
+      <button class="tab" data-focus data-tab="games">Games</button>
+      <button class="tab" data-focus data-tab="watch">Apps</button>
+      <button class="tab" data-focus data-tab="settings">Settings</button>
+    </nav>
+    <div class="status">
+      <div id="pad-status" class="pad-status" title="Controller"></div>
+      <div id="clock" class="clock">--:--</div>
+      <div id="user" class="user"></div>
+    </div>
+  </header>
+
+  <main id="views">
+    <section class="view" id="view-home" data-view="home">
+      <div class="hero">
+        <div class="hero-kicker"></div>
+        <div class="hero-titlebox">
+          <img class="hero-logo" alt="">
+          <h1 class="hero-title"></h1>
+        </div>
+        <div class="hero-meta"></div>
+        <p class="hero-desc"></p>
+      </div>
+      <div class="rows-viewport">
+        <div class="rows scroller" id="home-rows" data-anchor="top" data-memo="home-rows"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-foryou" data-view="foryou">
+      <div class="hero">
+        <div class="hero-kicker"></div>
+        <div class="hero-titlebox">
+          <img class="hero-logo" alt="">
+          <h1 class="hero-title"></h1>
+        </div>
+        <div class="hero-meta"></div>
+        <p class="hero-desc"></p>
+      </div>
+      <div class="rows-viewport">
+        <div class="rows scroller" id="foryou-rows" data-anchor="top" data-memo="foryou-rows"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-games" data-view="games">
+      <div class="view-scroll">
+        <div class="scroller" id="games-scroller">
+          <div class="view-head">
+            <h2>Games <span class="count" id="games-count"></span></h2>
+            <div class="chips" id="games-chips" data-group="games-chips"></div>
+          </div>
+          <div class="grid" id="games-grid" data-group="games-grid" data-remember></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-watch" data-view="watch">
+      <div class="view-scroll">
+        <div class="scroller" id="watch-scroller"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings" data-view="settings">
+      <div class="view-scroll">
+        <div class="scroller" id="settings-scroller"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer id="hints"></footer>
+
+  <div id="ambient-clock" class="ambient-clock" aria-hidden="true">
+    <div class="ambient-time"></div>
+    <div class="ambient-caption"></div>
+  </div>
+
+  <div id="launch" class="launch" aria-live="polite">
+    <div class="launch-bg"></div>
+    <div class="launch-body">
+      <img class="launch-logo" alt="">
+      <div class="launch-title"></div>
+      <div class="launch-sub"></div>
+      <div class="launch-bar"><i></i></div>
+      <div class="launch-tip"></div>
+    </div>
+  </div>
+
+  <div id="modal" class="modal" data-group="modal"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <div id="splash" class="splash"><img src="img/bwos.png" alt=""></div>
+
+  <script src="js/qr.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

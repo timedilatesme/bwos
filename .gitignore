@@ -1,0 +1,15 @@
+# Build output (portable app, zips, staging)
+/dist/
+
+# Runtime data if the app is ever run from the repo root
+/data/
+*.log
+
+# Editor / OS
+.vs/
+.vscode/
+*.suo
+*.user
+Thumbs.db
+Desktop.ini
+.DS_Store

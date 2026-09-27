@@ -1,0 +1,97 @@
+/* BWOS TV overlay: focus ring + control hints, in BWOS's frosted-glass style. */
+
+#bwos-ring {
+  position: fixed !important;
+  left: 0; top: 0;
+  width: 0; height: 0;
+  z-index: 2147483646 !important;
+  pointer-events: none !important;
+  border-radius: 10px;
+  box-shadow:
+    0 0 0 3px rgba(255, 255, 255, 0.95),
+    0 0 0 8px rgba(139, 123, 255, 0.35),
+    0 18px 48px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition:
+    transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 0.2s cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 0.2s ease, box-shadow 0.16s ease;
+}
+#bwos-ring.on { opacity: 1; }
+#bwos-ring.press { box-shadow: 0 0 0 5px #fff, 0 0 0 12px rgba(139, 123, 255, 0.5), 0 12px 32px rgba(0, 0, 0, 0.45); }
+
+#bwos-hint {
+  position: fixed !important;
+  left: 50%; bottom: 28px;
+  z-index: 2147483647 !important;
+  transform: translate(-50%, 16px);
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font: 600 15px/1.2 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(30, 32, 44, 0.55);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+          backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 12px 40px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none !important;
+  transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+#bwos-hint.on { opacity: 1; transform: translate(-50%, 0); }
+#bwos-hint span { width: 6px; }
+#bwos-hint .g {
+  display: inline-grid; place-items: center;
+  width: 24px; height: 24px; border-radius: 50%;
+  font-size: 12px; font-weight: 800; color: #fff; background: #f25450;
+}
+#bwos-hint .g.a { background: #6cc24a; color: #0b0c10; }
+#bwos-hint .g.x { background: #3b9cf5; }
+#bwos-hint .g.home { background: rgba(255, 255, 255, 0.9); color: #0b0c10; font-size: 14px; }
+
+/* While the controller drives, hide the mouse pointer so hover effects don't fight the ring. */
+html.bwos-pad, html.bwos-pad * { cursor: none !important; }
+
+/* Auto full screen for in-page players (Einthusan, Tubi, Plex…) */
+.bwos-fill {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important; height: 100vh !important;
+  max-width: none !important; max-height: none !important;
+  margin: 0 !important; padding: 0 !important;
+  transform: none !important;
+  border-radius: 0 !important;
+  z-index: 2147483000 !important;
+  background: #000 !important;
+}
+.bwos-fill video, video.bwos-fill, .bwos-fill-video {
+  width: 100% !important; height: 100% !important;
+  max-width: none !important; max-height: none !important;
+  object-fit: contain !important;
+}
+html.bwos-filled, html.bwos-filled body { overflow: hidden !important; }
+
+/* Banner ad slots that open new tabs on free sites (Einthusan) – hidden; they can't open anyway.
+   (Only page banners: ads inside the video player are part of its start-up and must stay.) */
+.adspace-lb { display: none !important; }
+
+/* Type-on-your-phone card (bottom-right, so the sign-in form stays visible) */
+#bwos-kbd {
+  position: fixed !important; right: 32px; bottom: 32px; z-index: 2147483647 !important;
+  display: flex; gap: 20px; align-items: center;
+  padding: 18px 22px 18px 18px; border-radius: 26px; max-width: 520px;
+  font: 500 15px/1.4 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; color: #f4f5f8;
+  background: rgba(28, 30, 42, 0.62);
+  -webkit-backdrop-filter: blur(40px) saturate(180%); backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 60px rgba(0, 0, 0, 0.5);
+  opacity: 0; transform: translateY(14px) scale(0.98);
+  transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+#bwos-kbd.on { opacity: 1; transform: none; }
+.bwos-kbd-qr { flex: none; width: 190px; height: 190px; padding: 8px; border-radius: 16px; background: #fff; }
+.bwos-kbd-qr svg { display: block; width: 100%; height: 100%; }
+.bwos-kbd-text { display: flex; flex-direction: column; gap: 6px; }
+.bwos-kbd-text b { font-size: 21px; font-weight: 700; }
+.bwos-kbd-text em { font-style: normal; font-weight: 800; color: #6cc24a; }
+.bwos-kbd-text small { color: rgba(244, 245, 248, 0.6); font-size: 13px; }
