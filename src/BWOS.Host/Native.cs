@@ -169,6 +169,17 @@ namespace Bwos
         [DllImport("user32.dll", SetLastError = true)]
         public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+        public const uint ES_DISPLAY_REQUIRED = 0x00000002;
+
+        [DllImport("kernel32.dll")]
+        public static extern uint SetThreadExecutionState(uint esFlags);
+
+        /// <summary>Turns the displays back on if Windows switched them off (controller input doesn't count as activity).</summary>
+        public static void WakeDisplays()
+        {
+            SetThreadExecutionState(ES_DISPLAY_REQUIRED);
+        }
+
         public static string WindowText(IntPtr hWnd)
         {
             var sb = new StringBuilder(512);

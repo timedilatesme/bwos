@@ -246,6 +246,19 @@ namespace Bwos
         public string Trigger { get { lock (gate) return Json.Str(data, "trigger", "guide"); } }
         public bool ControllerBridge { get { lock (gate) return Json.Bool(data, "controllerBridge", true); } }
         public bool ShowTools { get { lock (gate) return Json.Bool(data, "showTools", false); } }
+        /// <summary>Minutes without input before the BWOS screen fades to black (0 = never).</summary>
+        public int BlankAfter { get { lock (gate) return Json.Int(data, "blankAfter", 10); } }
+        /// <summary>Minutes without input before BWOS lets Windows switch the display off, so the projector can go to standby (0 = never).</summary>
+        public int StandbyAfter { get { lock (gate) return Json.Int(data, "standbyAfter", 0); } }
+        public bool OpenOnWake { get { lock (gate) return Json.Bool(data, "openOnWake", true); } }
+        /// <summary>Show up in phones' YouTube cast menu (DIAL on the home network).</summary>
+        public bool CastEnabled { get { lock (gate) return Json.Bool(data, "castEnabled", true); } }
+        /// <summary>AirPlay screen mirroring (runs UxPlay in the background when it's installed).</summary>
+        public bool AirPlayEnabled { get { lock (gate) return Json.Bool(data, "airplayEnabled", true); } }
+        /// <summary>Custom uxplay.exe location ("" = data\tools\uxplay\uxplay.exe).</summary>
+        public string AirPlayPath { get { lock (gate) return Json.Str(data, "airplayPath", ""); } }
+        /// <summary>Name shown in the top bar ("" = your Steam profile name).</summary>
+        public string UserName { get { lock (gate) return Json.Str(data, "userName", ""); } }
         public string Browser { get { lock (gate) return Json.Str(data, "browser", ""); } }
         public List<string> Hidden { get { lock (gate) return Json.Strings(data, "hidden"); } }
         public List<Dictionary<string, object>> Watch { get { lock (gate) return Json.List(data, "watch"); } }
@@ -306,6 +319,9 @@ namespace Bwos
   ""trigger"": ""guide"",
   ""controllerBridge"": true,
   ""showTools"": false,
+  ""blankAfter"": 10,
+  ""standbyAfter"": 0,
+  ""openOnWake"": true,
   ""browser"": """",
   ""hidden"": [""watch:hotstar"", ""watch:disney"", ""watch:crunchyroll"", ""watch:twitch"", ""watch:zee5"", ""watch:sonyliv"", ""watch:mxplayer"", ""watch:archive"", ""watch:spotify"", ""watch:ytmusic""],
   ""customGames"": [],

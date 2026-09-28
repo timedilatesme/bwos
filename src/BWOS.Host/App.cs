@@ -13,6 +13,8 @@ namespace Bwos
     internal sealed class App
     {
         public const string Version = "1.0.0";
+        /// <summary>How this PC appears in phones' cast and AirPlay menus.</summary>
+        public static readonly string CastName = "BWOS (" + Environment.MachineName + ")";
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
 
         public readonly Config Config;
@@ -23,12 +25,17 @@ namespace Bwos
         public readonly GamepadService Gamepad;
         public readonly Catalog Catalog;
         public readonly Tracker Tracker;
-        public readonly PhoneKeyboard Keyboard;
+        public readonly PhoneRemote Remote;
+        public readonly CastReceiver Cast;
+        public readonly AirPlayReceiver AirPlay;
+        private string pendingCast;          // YouTube URL a phone cast, waiting for the BWOS screen to open it
+        private DateTime pendingCastAt;
         private readonly InputBridge bridge;
         private DateTime lastTrigger = DateTime.MinValue;
         private string pendingLaunchKey;   // launched from BWOS, not yet detected as running
         private string launchedKey;        // the game BWOS launched (return to BWOS when it closes)
         private string lastRunningKey;
+        private DateTime resumedAt = DateTime.MinValue;
         public bool Dev;
 
         /// <summary>Set by the tray: quits the app on the UI thread.</summary>
@@ -55,8 +62,20 @@ namespace Bwos
             Catalog.Changed += delegate { Server.Broadcast("foryou", null); };
             Tracker.Changed += delegate { Server.Broadcast("upnext", null); };
 
-            Keyboard = new PhoneKeyboard(Shell, Config.Port + 1);
-            Keyboard.Typed += delegate(string action)
+            Remote = new PhoneRemote(Shell, Config.Port + 1);
+            Remote.HomePressed += delegate { OnTrigger("phone remote"); };
+            Remote.Paired += delegate { Server.Broadcast("phone", null); };
+            Cast = new CastReceiver(Config.Port + 2, () => Config.CastEnabled);
+            Cast.Launch += OnCast;
+            AirPlay = new AirPlayReceiver(Shell, () => Config.AirPlayEnabled, CastName);
+            AirPlay.ExePath = AirPlayReceiver.FindExe(Config.AirPlayPath);
+            // "Stop casting" on the phone: leave YouTube (but never another app that's on screen).
+            Cast.Stop += delegate
+            {
+                if (Shell.ServiceIsForeground() && Native.WindowText(Native.GetForegroundWindow()).IndexOf("YouTube", StringComparison.OrdinalIgnoreCase) >= 0)
+                    Shell.GoHome();
+            };
+            Remote.Typed += delegate(string action)
             {
                 var d = new Dictionary<string, object>();
                 d["action"] = action;
@@ -90,6 +109,10 @@ namespace Bwos
             Shell.CloseStaleShell();
             Server.Start();
             if (Gamepad != null) Gamepad.Start();
+            Cast.Start();
+            AirPlay.Start();
+            Remote.StartIfPaired();
+            if (!AirPlay.Installed) Log.Write("airplay: UxPlay not installed (see README → AirPlay)");
             Log.Write("BWOS " + Version + " listening on " + Server.BaseUrl + " (guide button " +
                 (Gamepad != null && Gamepad.GuideSupported ? "supported" : "NOT supported") + ")");
         }
@@ -97,6 +120,8 @@ namespace Bwos
         public void Stop()
         {
             if (Gamepad != null) Gamepad.Stop();
+            Cast.Shutdown();
+            AirPlay.Stop();
             Server.Stop();
         }
 
@@ -110,6 +135,7 @@ namespace Bwos
             }
             try
             {
+                Native.WakeDisplays();
                 if (Shell.ServiceIsForeground())
                 {
                     // Watching something inside BWOS: home leaves the service for the BWOS home screen.
@@ -133,6 +159,63 @@ namespace Bwos
             catch (Exception ex)
             {
                 Log.Write("trigger failed: " + ex);
+            }
+        }
+
+        /// <summary>
+        /// A phone cast to BWOS: bring the BWOS window up and have its home screen open YouTube's TV app
+        /// with the phone's pairing code. The screen claims the URL once (see /api/cast/claim), whether it
+        /// was already showing, had a streaming app open, or has to start first.
+        /// </summary>
+        private void OnCast(string url)
+        {
+            lock (this) { pendingCast = url; pendingCastAt = DateTime.UtcNow; }
+            Native.WakeDisplays();
+            if (Shell.ServiceIsForeground()) { Shell.GoHome(); return; }   // the home screen loads and claims it
+            if (!Shell.ShowShell()) return;                                   // starting: claimed at boot
+            Thread.Sleep(400);
+            if (Shell.ServiceIsForeground()) Shell.GoHome();
+            else Server.Broadcast("cast", null);
+        }
+
+        private string ClaimCast()
+        {
+            lock (this)
+            {
+                string url = pendingCast != null && (DateTime.UtcNow - pendingCastAt).TotalSeconds < 60 ? pendingCast : null;
+                pendingCast = null;
+                return url;
+            }
+        }
+
+        /// <summary>The PC woke from sleep or hibernation.</summary>
+        public void OnResumed()
+        {
+            resumedAt = DateTime.UtcNow;
+            if (!Config.OpenOnWake) return;
+            Thread.Sleep(2500); // let the displays come back first
+            OpenAfterWake("wake");
+        }
+
+        /// <summary>Signed in at the lock screen. Right after a wake, that's when BWOS can actually come to the front.</summary>
+        public void OnUnlocked()
+        {
+            if (!Config.OpenOnWake || (DateTime.UtcNow - resumedAt).TotalMinutes > 15) return;
+            Thread.Sleep(800);
+            OpenAfterWake("unlock after wake");
+        }
+
+        private void OpenAfterWake(string why)
+        {
+            if (Games.RunningKey != null) return; // a game was left running: it stays in front
+            try
+            {
+                if (Shell.ShowShell()) Server.Broadcast("focus", null);
+                Log.Write(why + ": opened BWOS");
+            }
+            catch (Exception ex)
+            {
+                Log.Write(why + ": couldn't open BWOS: " + ex.Message);
             }
         }
 
@@ -220,12 +303,21 @@ namespace Bwos
                     Tracker.Report(b);
                     return Ok();
                 case "keyboard":
-                    try { return Keyboard.Open(); }
+                    try { return Remote.Open(); }
                     catch (Exception ex)
                     {
-                        Log.Write("phone keyboard failed: " + ex.Message);
-                        return WebServer.Err("Couldn't start the phone keyboard: " + ex.Message);
+                        Log.Write("phone remote failed: " + ex.Message);
+                        return WebServer.Err("Couldn't start the phone remote: " + ex.Message);
                     }
+                case "phones":
+                    if (sub != "forget") break;
+                    Remote.ForgetPhones();
+                    return Ok();
+                case "cast":
+                    if (sub != "claim") break;
+                    var cd = new Dictionary<string, object>();
+                    cd["url"] = ClaimCast();
+                    return cd;
                 case "foryou":
                     ThreadPool.QueueUserWorkItem(delegate { try { Catalog.Rebuild(); } catch (Exception ex) { Log.Write("catalog: " + ex.Message); } });
                     return Ok();
@@ -269,20 +361,29 @@ namespace Bwos
             d["upNext"] = Tracker.UpNext();
             d["controllers"] = Gamepad != null ? Gamepad.Describe() : new List<Dictionary<string, object>>();
 
+            // The name shown in the top bar: your own choice, else your Steam profile name.
             var u = Library.User;
-            if (u != null)
-            {
-                var ud = new Dictionary<string, object>();
-                ud["name"] = u.Name;
-                ud["avatar"] = u.AvatarPath != null ? "/api/avatar" : null;
-                d["user"] = ud;
-            }
+            string custom = Config.UserName;
+            var ud = new Dictionary<string, object>();
+            ud["name"] = custom.Length > 0 ? custom : (u != null ? u.Name : "");
+            ud["steamName"] = u != null ? u.Name : null;
+            ud["custom"] = custom.Length > 0;
+            ud["avatar"] = u != null && u.AvatarPath != null ? "/api/avatar" : null;
+            d["user"] = ud;
 
             var s = new Dictionary<string, object>();
             s["trigger"] = Config.Trigger;
             s["controllerBridge"] = Config.ControllerBridge;
             s["showTools"] = Config.ShowTools;
             s["autostart"] = Autostart;
+            s["blankAfter"] = Config.BlankAfter;
+            s["standbyAfter"] = Config.StandbyAfter;
+            s["openOnWake"] = Config.OpenOnWake;
+            s["castEnabled"] = Config.CastEnabled;
+            s["castName"] = CastName;
+            s["airplayEnabled"] = Config.AirPlayEnabled;
+            s["airplayInstalled"] = AirPlay.Installed;
+            s["phones"] = Remote.PairedCount;
             s["guideSupported"] = Gamepad != null && Gamepad.GuideSupported;
             s["dev"] = Dev;
             s["country"] = Config.Country;
@@ -322,13 +423,28 @@ namespace Bwos
                     Config.Set("trigger", t);
                     if (Gamepad != null) Gamepad.TriggerMode = t;
                     return Ok();
+                case "blankAfter":
+                case "standbyAfter":
+                    int minutes;
+                    if (!int.TryParse(Convert.ToString(value), out minutes) || minutes < 0 || minutes > 24 * 60) return WebServer.Err("bad duration");
+                    Config.Set(key, minutes);
+                    return Ok();
                 case "controllerBridge":
                 case "showTools":
+                case "openOnWake":
+                case "castEnabled":
+                case "airplayEnabled":
                     Config.Set(key, value is bool && (bool)value);
                     if (key == "showTools") Library.Refresh();
+                    if (key == "airplayEnabled") AirPlay.Refresh();
                     return Ok();
                 case "autostart":
                     Autostart = value is bool && (bool)value;
+                    return Ok();
+                case "userName":
+                    string name = new string(Convert.ToString(value ?? "").Where(ch => !char.IsControl(ch)).ToArray()).Trim();
+                    if (name.Length > 24) return WebServer.Err("Keep the name to 24 characters or fewer");
+                    Config.Set("userName", name);
                     return Ok();
                 case "country":
                     string c = Convert.ToString(value ?? "");

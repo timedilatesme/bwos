@@ -45,6 +45,9 @@ function set(el, opts = {}) {
   }
   current = el;
   el.classList.add('is-focused');
+  // Text boxes need the real keyboard focus to be typed into (keyboard or phone keyboard).
+  if (el.matches('input, textarea')) el.focus({ preventScroll: true });
+  else if (document.activeElement && document.activeElement.matches('input, textarea')) document.activeElement.blur();
   if (!el.querySelector(':scope > .glare') && (el.classList.contains('card') || el.classList.contains('tile'))) {
     const g = document.createElement('i');
     g.className = 'glare';

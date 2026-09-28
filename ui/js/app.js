@@ -22,6 +22,7 @@ const visibleGames = () => S.games.filter((g) => !g.hidden);
 // ------------------------------------------------------------------ boot
 
 async function boot() {
+  const intro = startIntro();
   focus.setScope(() => (modalOpen ? $('#modal') : document.body));
   focus.onChange(onFocusChange);
   input.on(onAction);
@@ -47,9 +48,10 @@ async function boot() {
   const first = $('#home-rows [data-focus]');
   if (first) focus.set(first, { instant: true });
   restorePlace();
-  requestAnimationFrame(() => document.body.classList.remove('booting'));
+  intro.done();
   // Coming back from a streaming service via the back/forward cache: tidy up.
-  addEventListener('pageshow', (e) => { if (e.persisted) { hideLaunch(); restorePlace(); reload(); } });
+  addEventListener('pageshow', (e) => { if (e.persisted) { hideLaunch(); restorePlace(); reload(); claimCast(); } });
+  claimCast();
 
   listen({
     running: async (d) => {
@@ -64,22 +66,70 @@ async function boot() {
       reload();
     },
     home: () => goHome(),
-    focus: () => { exitAmbient(); reload(); sound.tab(); }
+    cast: () => claimCast(),
+    phone: () => {
+      if (modalOpen && $('#modal .modal-qr')) closeModal();
+      toast('Phone connected. Swipe to move, tap to select.', 'check');
+      reload();
+    },
+    focus: () => { exitRest(); exitAmbient(); reload(); sound.tab(); }
   });
 
-  // Ambient pad: only while BWOS itself is on screen (fades out for games and streaming apps).
-  const ambientSync = () => {
-    if (!document.hidden && document.hasFocus()) sound.startAmbient();
-    else sound.stopAmbient();
-  };
   addEventListener('focus', ambientSync);
   addEventListener('blur', ambientSync);
-  document.addEventListener('visibilitychange', ambientSync);
+  document.addEventListener('visibilitychange', () => { ambientSync(); syncWakeLock(); });
+  // Real mouse movement wakes the screen (Chromium also sends zero-distance moves on layout changes).
+  addEventListener('mousemove', (e) => { if (resting() && (e.movementX || e.movementY)) exitRest(); });
   addEventListener('pagehide', () => sound.stopAmbient(true));
   ambientSync();
 
   // Keep "now playing" etc. fresh even if an event was missed.
   setInterval(() => { if (!document.hidden) reload(); }, 30000);
+}
+
+/**
+ * The start-up animation. The full version plays once per BWOS window; coming back from a
+ * streaming app (same window, same session) only fades in.
+ */
+function startIntro() {
+  const el = $('#intro');
+  let full = true;
+  try { full = !sessionStorage.getItem('bwos.intro'); sessionStorage.setItem('bwos.intro', '1'); } catch {}
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    document.body.classList.remove('booting');
+    if (full) {
+      document.body.classList.add('opening');
+      setTimeout(() => document.body.classList.remove('opening'), 1000);
+    }
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 800);
+  };
+  setTimeout(finish, 10000); // never stay on the intro, even if start-up failed
+  if (!full) {
+    el.classList.add('quick');
+    return { done: () => requestAnimationFrame(finish) };
+  }
+  // Each trace draws half the outline (pathLength 2 → dash of 1); the mirrored pair draws the other side.
+  const body = $('#i-body').getAttribute('d');
+  $$('.i-trace').forEach((p) => { p.setAttribute('d', body); p.setAttribute('pathLength', '2'); });
+  el.classList.add('play');
+  setTimeout(() => sound.intro(), 200);
+  const shown = sleep(2900);
+  return { done: () => shown.then(finish) };
+}
+
+/** A phone cast to BWOS: open YouTube's TV app with the phone's pairing code (claimed once from the host). */
+async function claimCast() {
+  if (standalone || document.hidden) return;
+  let r = null;
+  try { r = await api.claimCast(); } catch { return; }
+  if (!r || !r.url) return;
+  exitRest();
+  closeModal();
+  openInside({ url: r.url, title: 'YouTube', sub: 'Connecting to your phone…', brand: '#ff0033', returnKey: 'watch:youtube' });
 }
 
 /** After returning from a streaming service, put focus back on the tile that opened it. */
@@ -162,14 +212,14 @@ function renderStatus() {
 
   const user = $('#user');
   user.replaceChildren();
-  if (S.user && S.user.name) {
-    if (S.user.avatar) {
-      const img = h('img', { src: S.user.avatar, alt: '' });
-      img.onerror = () => img.replaceWith(h('div.avatar-fallback', null, S.user.name[0].toUpperCase()));
-      user.append(img);
-    } else user.append(h('div.avatar-fallback', null, S.user.name[0].toUpperCase()));
-    user.append(h('span', null, S.user.name));
-  }
+  const name = (S.user && S.user.name) || '';
+  const initial = () => h('div.avatar-fallback', null, name ? name[0].toUpperCase() : icon('user'));
+  if (S.user && S.user.avatar) {
+    const img = h('img', { src: S.user.avatar, alt: '' });
+    img.onerror = () => img.replaceWith(initial());
+    user.append(img);
+  } else user.append(initial());
+  user.append(h('span', null, name || 'Add your name'));
 }
 
 function tickClock() {
@@ -410,6 +460,12 @@ function renderWatch() {
 
 const REGIONS = [['IN', 'India'], ['US', 'United States'], ['GB', 'United Kingdom'], ['CA', 'Canada'], ['AU', 'Australia'], ['AE', 'UAE']];
 
+// Minutes; 0 = never.
+const BLANK_AFTER = [[5, '5 minutes'], [10, '10 minutes'], [20, '20 minutes'], [30, '30 minutes'], [60, '1 hour'], [0, 'Never']];
+const STANDBY_AFTER = [[0, 'Never'], [60, '1 hour'], [120, '2 hours'], [240, '4 hours']];
+const cycleValue = (label) => h('span.cycle', null, h('span.arrow', null, '‹'), label, h('span.arrow', null, '›'));
+const labelOf = (list, v) => (list.find((o) => o[0] === v) || list[0])[1];
+
 const TRIGGERS = [
   ['guide', 'Home / Guide button'],
   ['back+start', 'View + Menu together'],
@@ -434,13 +490,22 @@ function renderSettings() {
       setting({ key: 'trigger', title: 'Open BWOS with', desc: 'Works everywhere — on the desktop and inside games.', ico: 'gamepad', value: h('span.cycle', null, h('span.arrow', null, '‹'), trig[1], h('span.arrow', null, '›')) }),
       setting({ key: 'swapAB', title: 'Nintendo-style confirm', desc: 'Swap the confirm and back buttons.', ico: 'swap', value: toggle(input.swapAB) }),
       setting({ key: 'controllerBridge', title: 'Controller as remote in streaming apps', desc: 'D-pad = arrows, A = select, right stick = mouse, B = back.', ico: 'mouse', value: toggle(st.controllerBridge) }),
-      setting({ key: 'phoneKeyboard', title: 'Type on your phone', desc: 'Scan a QR code and type sign-ins or searches on your phone. In apps, press Menu.', ico: 'wifi' })),
+      setting({ key: 'castEnabled', title: 'Cast from your phone', desc: `In the YouTube app on your phone, tap Cast and choose “${st.castName || 'BWOS'}”. Same Wi-Fi as this PC.`, ico: 'cast', value: toggle(st.castEnabled) }),
+      setting({ key: 'airplayEnabled', title: 'AirPlay from iPhone or Mac',
+        desc: st.airplayInstalled ? `Control Centre → Screen Mirroring → “${st.castName || 'BWOS'}”. Press Home to come back.` : 'Needs UxPlay; see the README (AirPlay).',
+        ico: 'cast', value: st.airplayInstalled ? toggle(st.airplayEnabled) : h('span', null, 'Not installed') }),
+      setting({ key: 'phoneKeyboard', title: 'Phone remote', desc: 'Scan once with any phone: swipe to move, tap to select, Back, Home, volume and a keyboard. In apps, press Menu.', ico: 'wifi' }),
+      st.phones ? setting({ key: 'forgetPhones', title: 'Forget paired phones', desc: `${st.phones} phone${st.phones === 1 ? '' : 's'} can control BWOS without scanning again.`, ico: 'eyeoff' }) : null),
     h('div.settings-group', null, h('h3', null, 'For You'),
       setting({ key: 'country', title: 'Recommendations region', desc: 'Which country’s Netflix / Prime Video catalogue to recommend from.', ico: 'tv', value: h('span.cycle', null, h('span.arrow', null, '‹'), REGIONS.find((r) => r[0] === st.country)?.[1] || st.country || 'Auto', h('span.arrow', null, '›')) }),
       setting({ key: 'refreshForYou', title: 'Refresh recommendations', desc: 'They also refresh by themselves every few hours and as you watch.', ico: 'refresh' })),
     h('div.settings-group', null, h('h3', null, 'Library'),
       setting({ key: 'showTools', title: 'Show tools & runtimes', desc: 'SteamVR, redistributables, Proton…', ico: 'eye', value: toggle(st.showTools) }),
       setting({ key: 'rescan', title: 'Rescan game libraries', desc: 'Steam, Epic Games, GOG and custom games.', ico: 'refresh', kind: 'setting' })),
+    h('div.settings-group', null, h('h3', null, 'Screen'),
+      setting({ key: 'blankAfter', title: 'Fade to black when idle', desc: 'The screen goes dark but keeps its signal, so the projector stays on. Any button wakes it.', ico: 'eyeoff', value: cycleValue(labelOf(BLANK_AFTER, st.blankAfter)) }),
+      setting({ key: 'standbyAfter', title: 'Let the display switch off after', desc: 'Hands over to Windows’ power settings, so the projector can go to standby.', ico: 'power', value: cycleValue(labelOf(STANDBY_AFTER, st.standbyAfter)) }),
+      setting({ key: 'openOnWake', title: 'Open BWOS when the PC wakes', desc: 'After sleep or hibernation, BWOS comes straight up.', ico: 'rocket', value: toggle(st.openOnWake) })),
     h('div.settings-group', null, h('h3', null, 'System'),
       setting({ key: 'autostart', title: 'Start BWOS with Windows', desc: 'Runs quietly in the tray so the home button always works.', ico: 'rocket', value: toggle(st.autostart) }),
       setting({ key: 'sounds', title: 'Interface sounds', ico: 'sound', value: toggle(sound.enabled) }),
@@ -653,6 +718,8 @@ function updateHints() {
     else if (k === 'title') items.push(hint('accept', 'Watch'), hint('options', 'More'));
     else if (k === 'resume') items.push(hint('accept', 'Resume'), hint('options', 'Options'));
     else if (k === 'setting') items.push(hint('accept', 'Change'));
+    else if (k === 'controls') items.push(hint('accept', 'Controller settings'));
+    else if (k === 'profile') items.push(hint('accept', 'Change name'));
     else items.push(hint('accept', 'Select'));
     if (view !== 'home' || (el && !el.classList.contains('tab'))) items.push(hint('back', 'Back'));
     items.push(hint('tabs', 'Switch'));
@@ -691,6 +758,7 @@ function switchTab(name, opts = {}) {
 }
 
 function goHome() {
+  exitRest();
   exitAmbient();
   closeModal();
   hideLaunch();
@@ -714,6 +782,9 @@ function onAction(action, source) {
     const cur = focus.current;
     api.log(`action ${action} via ${source} on ${view} / ${cur ? (cur.dataset.key || cur.textContent.trim().slice(0, 24)) : '-'}`);
   }
+  syncWakeLock();
+  // The first press only wakes the screen.
+  if (resting()) { exitRest(); return; }
   if (document.body.classList.contains('ambient')) { exitAmbient(); return; }
   if ($('#launch').classList.contains('show')) {
     if (action === 'back') { sound.back(); hideLaunch(); }
@@ -778,7 +849,8 @@ async function activate(el) {
     if (modalOpen && el.closest('#modal')) {
       sound.select();
       const fn = modalOpen.handlers[el.dataset.action];
-      closeModal();
+      // data-stay: the panel updates in place (settings toggles, showing a QR code…)
+      if (!el.dataset.stay) closeModal();
       if (fn) await fn();
       return;
     }
@@ -791,6 +863,8 @@ async function activate(el) {
       case 'filter': sound.select(); gamesFilter = el.dataset.id; renderGames(); focus.set($(`#games-chips [data-key="filter:${el.dataset.id}"]`), { silent: true }); updateHints(); return;
       case 'sort': sound.select(); gamesSort = el.dataset.id; renderGames(); focus.set($(`#games-chips [data-key="sort:${el.dataset.id}"]`), { silent: true }); updateHints(); return;
       case 'setting': sound.select(); return changeSetting(el.dataset.setting);
+      case 'controls': sound.select(); return openControls();
+      case 'profile': sound.select(); return openProfile();
     }
   } catch (err) {
     sound.error();
@@ -912,14 +986,31 @@ async function changeSetting(key) {
       showQr(r);
       return;
     }
+    case 'forgetPhones':
+      return confirm('Forget paired phones?', 'They will need to scan the QR code on the TV again.', [
+        ['go', 'Forget phones', 'eyeoff', async () => { await api.forgetPhones(); toast('Phones forgotten', 'check'); reload(); }],
+        ['cancel', 'Cancel']]);
     case 'refreshForYou':
       await api.refreshForYou();
       toast('Refreshing recommendations…', 'refresh');
       break;
     case 'sounds': sound.enabled = !sound.enabled; break;
     case 'ambient': sound.ambient = !sound.ambient; break;
+    case 'blankAfter':
+    case 'standbyAfter': {
+      const list = key === 'blankAfter' ? BLANK_AFTER : STANDBY_AFTER;
+      const i = list.findIndex((o) => o[0] === st[key]);
+      await api.setting(key, list[(i + 1) % list.length][0]);
+      break;
+    }
     case 'controllerBridge':
     case 'showTools':
+    case 'airplayEnabled':
+      if (!st.airplayInstalled) { toast('AirPlay needs UxPlay. See the README.', 'info'); return; }
+      await api.setting(key, !st[key]);
+      break;
+    case 'openOnWake':
+    case 'castEnabled':
     case 'autostart':
       await api.setting(key, !st[key]);
       break;
@@ -1003,23 +1094,110 @@ function confirm(title, text, options) {
   updateHints();
 }
 
-/** Phone keyboard QR code in a modal (Settings → Type on your phone). */
+/** Phone remote QR code in a modal (Settings → Phone remote). Closes by itself once a phone connects. */
 function showQr(r) {
-  if (!r || !r.url) { toast((r && r.error) || 'Phone keyboard unavailable', 'alert', true); return; }
+  if (!r || !r.url) { toast((r && r.error) || 'Phone remote unavailable', 'alert', true); return; }
   const modal = $('#modal');
   const done = h('button.btn', { 'data-focus': true, dataset: { kind: 'btn', action: 'cancel' } }, 'Done');
   const qr = h('div.qr-box', { html: window.BWOSQR ? window.BWOSQR.svg(r.url, { dark: '#0b0c12' }) : '' });
   modal.replaceChildren(h('div.modal-panel.modal-qr', null,
     qr,
     h('div', null,
-      h('div.modal-title', null, 'Type on your phone'),
-      h('div.modal-text', null, 'Scan with your phone’s camera (same Wi-Fi as this PC). Select a text box on the TV, then type on the phone. If Windows asks about network access for BWOS, choose Allow.'),
+      h('div.modal-title', null, 'Your phone as a remote'),
+      h('div.modal-text', null, 'Scan with your phone’s camera (same Wi-Fi as this PC). Swipe to move, tap to select, and use the Keyboard tab to type. Your phone stays paired; add the page to your home screen to open it in one tap.'),
       h('div.qr-url', null, r.url.replace(/^http:\/\//, '')),
       h('div.modal-actions', null, done))));
   modalOpen = { restore: focus.current, handlers: {} };
   modal.classList.add('show');
   focus.set(done, { silent: true });
   updateHints();
+}
+
+function showPanel(panel, handlers, first) {
+  const modal = $('#modal');
+  modal.replaceChildren(panel);
+  // Re-rendering a panel in place keeps the original place to return to.
+  modalOpen = { restore: modalOpen ? modalOpen.restore : focus.current, handlers };
+  modal.classList.add('show');
+  focus.set(first, { silent: true });
+  updateHints();
+}
+
+/** Top bar → your name. Type it with a keyboard, or on your phone. */
+function openProfile(qr = null, draft = null) {
+  const u = S.user || {};
+  const field = h('input.field', {
+    type: 'text', maxlength: 24, spellcheck: 'false', autocomplete: 'off',
+    placeholder: u.steamName || 'Your name', 'data-focus': true, dataset: { kind: 'btn', action: 'save' }
+  });
+  field.value = draft != null ? draft : (u.name || '');
+  const btn = (action, label, ico, stay) => h('button.btn', { 'data-focus': true, dataset: stay ? { kind: 'btn', action, stay: '1' } : { kind: 'btn', action } }, icon(ico), label);
+  const save = async () => {
+    // Leaving the Steam name as it was keeps following Steam (no custom name is stored).
+    let v = field.value.trim();
+    if (!u.custom && v === u.steamName) v = '';
+    await api.setting('userName', v);
+    await reload();
+    toast(v ? `Hi, ${v}` : 'Using your Steam name', 'check');
+  };
+  const handlers = {
+    save,
+    phone: async () => {
+      const r = await api.keyboard();
+      if (!r || !r.url) { toast((r && r.error) || 'Phone keyboard unavailable', 'alert', true); return; }
+      openProfile(r, field.value);
+    },
+    steam: async () => { field.value = ''; await save(); }
+  };
+  const actions = [btn('save', 'Save', 'check'), qr ? null : btn('phone', 'Type on your phone', 'wifi', true),
+    u.steamName && u.custom ? btn('steam', `Use my Steam name (${u.steamName})`, 'refresh') : null, btn('cancel', 'Cancel', 'exit')];
+  const form = h('div', null,
+    h('div.modal-title', null, 'Your name'),
+    h('div.modal-text', null, 'Shown in the top corner. Type with a keyboard, or on your phone.'),
+    field,
+    h('div.modal-actions', null, actions));
+  const panel = qr && qr.url
+    ? h('div.modal-panel.modal-name.with-qr', null, form,
+      h('div', null, h('div.qr-box', { html: window.BWOSQR ? window.BWOSQR.svg(qr.url, { dark: '#0b0c12' }) : '' }),
+        h('div.qr-note', null, 'Scan, then type. It fills in the box.')))
+    : h('div.modal-panel.modal-name', null, form);
+  showPanel(panel, handlers, field);
+}
+
+/** Top bar → controller: connected pads, the home button, and button behaviour. */
+function openControls(focusKey) {
+  const st = S.settings || {};
+  const handlers = {};
+  const row = (opts) => {
+    const b = setting(opts);
+    b.dataset.action = opts.key;
+    b.dataset.stay = '1';
+    handlers[opts.key] = async () => { await changeSetting(opts.key); openControls(opts.key); };
+    return b;
+  };
+  const trig = TRIGGERS.find((t) => t[0] === st.trigger) || TRIGGERS[0];
+  const pads = S.controllers || [];
+  const chips = pads.length
+    ? pads.map((p, i) => h('div.pad-chip', null, icon('gamepad'), `Controller ${i + 1} · ${p.battery === 'wired' ? 'wired' : 'battery ' + p.battery}`))
+    : [h('div.pad-chip', null, icon('gamepad'), input.padCount() ? 'Controller connected' : 'No controller found')];
+  const ps = input.family === 'playstation';
+  const map = [
+    [ps ? '✕' : 'A', 'Select'], [ps ? '○' : 'B', 'Back'], [ps ? '△' : 'Y', 'Options'], [ps ? 'L1 R1' : 'LB RB', 'Switch tab'],
+    [ps ? 'L2 R2' : 'LT RT', 'Volume'], [ps ? 'Options' : 'Menu', 'Settings'], [ps ? 'PS' : 'Home', 'Open BWOS'], ['R3', 'Click (in apps)']
+  ];
+  const rows = [
+    row({ key: 'trigger', title: 'Open BWOS with', desc: 'Works everywhere, even inside games.', ico: 'gamepad', value: cycleValue(trig[1]) }),
+    row({ key: 'swapAB', title: 'Nintendo-style confirm', desc: 'Swap the confirm and back buttons.', ico: 'swap', value: toggle(input.swapAB) }),
+    row({ key: 'controllerBridge', title: 'Controller as remote in apps', desc: 'D-pad = arrows, A = select, right stick = mouse, B = back.', ico: 'mouse', value: toggle(st.controllerBridge) })
+  ];
+  const done = h('button.btn', { 'data-focus': true, dataset: { kind: 'btn', action: 'cancel' } }, icon('check'), 'Done');
+  const panel = h('div.modal-panel.modal-controls', null,
+    h('div.modal-title', null, 'Controller'),
+    h('div.pad-list', null, chips),
+    rows,
+    h('div.button-map', null, map.map(([b, what]) => h('div', null, h('b', null, b), what))),
+    h('div.modal-actions', null, done));
+  showPanel(panel, handlers, rows.find((r) => r.dataset.action === focusKey) || rows[0]);
 }
 
 function closeModal() {
@@ -1081,8 +1259,57 @@ function toast(text, ico = 'info', error = false) {
 
 let ambientTimer = 0;
 function checkIdle() {
-  const idle = input.idleMs > 150000;
-  if (idle && !document.body.classList.contains('ambient') && view === 'home' && !modalOpen && !launching && document.hasFocus()) enterAmbient();
+  const st = S.settings || {};
+  const onScreen = document.hasFocus() && !document.hidden;
+  const idle = input.idleMs;
+  if (idle > 150000 && !document.body.classList.contains('ambient') && view === 'home' && !modalOpen && !launching && onScreen) enterAmbient();
+  if (st.blankAfter > 0 && idle > st.blankAfter * 60000 && onScreen && !launching && !resting()) enterRest();
+  syncWakeLock();
+}
+
+/** Ambient music only while BWOS itself is on screen (not for games, streaming apps or the black screen). */
+function ambientSync() {
+  if (!document.hidden && document.hasFocus() && !resting()) sound.startAmbient();
+  else sound.stopAmbient();
+}
+
+// ------------------------------------------------------------------ rest (black screen)
+// Instead of letting Windows switch the display off (a projector then loses its signal and
+// goes to standby, which usually needs its remote), BWOS fades to black and keeps the signal.
+// A screen wake lock stops Windows from cutting it, until the "switch off after" time passes.
+
+const resting = () => document.body.classList.contains('resting');
+
+function enterRest() {
+  exitAmbient();
+  document.body.classList.add('resting', 'hide-cursor');
+  ambientSync();
+}
+
+function exitRest() {
+  if (!resting()) return;
+  document.body.classList.remove('resting');
+  ambientSync();
+}
+
+let wakeLock = null;
+async function syncWakeLock() {
+  if (!navigator.wakeLock) return;
+  const st = S.settings || {};
+  const want = !document.hidden && !(st.standbyAfter > 0 && input.idleMs > st.standbyAfter * 60000);
+  if (want && !wakeLock) {
+    wakeLock = 'pending';
+    try {
+      const lock = await navigator.wakeLock.request('screen');
+      wakeLock = lock;
+      // Chromium drops the lock when the page is hidden; it's requested again when BWOS is back.
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+    } catch { wakeLock = null; }
+  } else if (!want && wakeLock && wakeLock !== 'pending') {
+    const lock = wakeLock;
+    wakeLock = null;
+    lock.release().catch(() => {});
+  }
 }
 
 function enterAmbient() {

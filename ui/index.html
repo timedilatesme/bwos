@@ -29,9 +29,9 @@
       <button class="tab" data-focus data-tab="settings">Settings</button>
     </nav>
     <div class="status">
-      <div id="pad-status" class="pad-status" title="Controller"></div>
+      <button id="pad-status" class="pad-status" data-focus data-kind="controls" title="Controller settings"></button>
       <div id="clock" class="clock">--:--</div>
-      <div id="user" class="user"></div>
+      <button id="user" class="user" data-focus data-kind="profile" title="Your name"></button>
     </div>
   </header>
 
@@ -112,7 +112,40 @@
   <div id="modal" class="modal" data-group="modal"></div>
   <div id="toasts" class="toasts"></div>
 
-  <div id="splash" class="splash"><img src="img/bwos.png" alt=""></div>
+  <!-- Start-up: light traces the controller's outline from the top centre down both sides, the
+       controller fills in, and its home button lights. Same shape as tools/icon/icon.html. -->
+  <div id="intro" class="intro" aria-hidden="true">
+    <svg class="intro-art" viewBox="0 0 1024 1024">
+      <defs>
+        <linearGradient id="i-shell" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stop-color="#ffffff"/><stop offset="0.55" stop-color="#eceef4"/><stop offset="1" stop-color="#c9cdd9"/>
+        </linearGradient>
+        <linearGradient id="i-light" gradientUnits="userSpaceOnUse" x1="512" y1="290" x2="900" y2="880">
+          <stop offset="0" stop-color="#b9a8ff"/><stop offset="0.45" stop-color="#5ccfff"/><stop offset="1" stop-color="#ff86d6"/>
+        </linearGradient>
+        <linearGradient id="i-home" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#9d8bff"/><stop offset="0.5" stop-color="#4cc8ff"/><stop offset="1" stop-color="#ff7ad0"/>
+        </linearGradient>
+        <filter id="i-glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="12"/></filter>
+        <filter id="i-halo" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="14"/></filter>
+        <path id="i-body" d="M512 292 L628 292 C722 292 784 288 830 322 C874 354 896 414 912 486 C932 574 962 684 964 760 C966 836 916 880 858 874 C806 868 780 826 756 774 C730 716 700 650 636 632 C590 620 552 630 512 630 C472 630 434 620 388 632 C324 650 294 716 268 774 C244 826 218 868 166 874 C108 880 58 836 60 760 C62 684 92 574 112 486 C128 414 150 354 194 322 C240 288 302 292 396 292 L512 292 Z"/>
+      </defs>
+      <g transform="translate(512 512) scale(0.97) translate(-512 -586)">
+        <use class="i-fill" href="#i-body" fill="url(#i-shell)"/>
+        <!-- Two traces from the top centre, mirrored, meeting at the bottom -->
+        <g class="i-light">
+          <path class="i-trace i-soft" filter="url(#i-glow)"/><path class="i-trace"/>
+          <g class="i-mirror"><path class="i-trace i-soft" filter="url(#i-glow)"/><path class="i-trace"/></g>
+        </g>
+        <circle class="i-home-halo" cx="512" cy="540" r="36" fill="url(#i-home)" filter="url(#i-halo)"/>
+        <circle class="i-home" cx="512" cy="540" r="24" fill="url(#i-home)"/>
+      </g>
+    </svg>
+    <div class="intro-word">BWOS</div>
+  </div>
+
+  <!-- Idle: the screen fades to black but keeps its signal, so a projector stays on. -->
+  <div id="rest" class="rest" aria-hidden="true"></div>
 
   <script src="js/qr.js"></script>
   <script type="module" src="js/app.js"></script>

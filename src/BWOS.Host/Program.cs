@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Threading;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace Bwos
 {
@@ -95,6 +96,8 @@ namespace Bwos
         private readonly HidWatcher hid;
         private readonly ToolStripMenuItem autostartItem;
         private readonly Control uiThread = new Control(); // marshals calls from worker threads
+        private readonly PowerModeChangedEventHandler powerChanged;
+        private readonly SessionSwitchEventHandler sessionSwitched;
 
         public TrayContext(App app)
         {
@@ -106,6 +109,18 @@ namespace Bwos
             hid = new HidWatcher();
             hid.HomePressed += delegate { ThreadPool.QueueUserWorkItem(delegate { app.OnTrigger("PS/Switch home"); }); };
             hid.HotkeyPressed += delegate { ThreadPool.QueueUserWorkItem(delegate { app.OnTrigger("Ctrl+Alt+Home"); }); };
+
+            // Waking the PC (or signing in right after) lands in BWOS.
+            powerChanged = delegate(object s, PowerModeChangedEventArgs e)
+            {
+                if (e.Mode == PowerModes.Resume) ThreadPool.QueueUserWorkItem(delegate { app.OnResumed(); });
+            };
+            sessionSwitched = delegate(object s, SessionSwitchEventArgs e)
+            {
+                if (e.Reason == SessionSwitchReason.SessionUnlock) ThreadPool.QueueUserWorkItem(delegate { app.OnUnlocked(); });
+            };
+            SystemEvents.PowerModeChanged += powerChanged;
+            SystemEvents.SessionSwitch += sessionSwitched;
 
             var menu = new ContextMenuStrip();
             var open = new ToolStripMenuItem("Open BWOS", null, delegate { ThreadPool.QueueUserWorkItem(delegate { app.Shell.ShowShell(); }); });
@@ -141,6 +156,8 @@ namespace Bwos
         {
             if (disposing)
             {
+                SystemEvents.PowerModeChanged -= powerChanged;
+                SystemEvents.SessionSwitch -= sessionSwitched;
                 icon.Visible = false;
                 icon.Dispose();
                 hid.Dispose();

@@ -102,18 +102,65 @@ Other details that mattered:
 - There is no cross-service single sign-on. One persistent BWOS profile means signing in once per service.
 - QR/device-code sign-in exists only in the services' *TV apps* (e.g. youtube.com/activate, which works because
   BWOS runs YouTube's TV client); Netflix and Prime websites don't offer it.
-- **Phone keyboard** instead: a tiny HTTP server on the LAN (started on first use; Windows asks once to allow it)
-  serves a typing page behind a random one-time code encoded in a QR code. The QR generator is written in-house
-  (byte mode, EC level M, v1–6) and was verified by decoding. Text is typed with `SendInput` Unicode events,
-  only while the BWOS window is in front.
+- **Phone remote and keyboard** instead: a tiny HTTP server on the LAN (started on first use, or at start-up once
+  a phone is paired) serves one self-contained page. The QR code carries a one-time pairing code; the page trades
+  it for a random 192-bit token kept in the phone's `localStorage` (BWOS stores only its SHA-256) and moves to
+  the bookmarkable `/r`. The QR generator is written in-house (byte mode, EC level M, v1–6) and was verified by
+  decoding. Text is typed with `SendInput` Unicode events, only while the BWOS window is in front.
+- The remote sends the controller's keys (arrows, Enter, Esc; Space/F inside apps, X/O on BWOS's screens), and
+  Home runs the same code as the controller's home button. The touch surface emits one step per 44 px of travel,
+  so a long swipe scrolls a row, and a tap near an edge is a single step, like the Siri Remote's clickpad.
 
-## 6. Design language & sound
+## 6. Waking up: sleep, displays and the projector
+
+- **Waking the PC with the controller** needs the controller's receiver to support USB *remote wake-up*. The
+  tested 8BitDo 2.4 GHz receiver doesn't (Windows reports no wake capability, so it can't be armed with
+  `powercfg /deviceenablewake`). BWOS therefore keeps the PC ready instead of relying on sleep.
+- **Controller input isn't user activity to Windows**, so the display timeout can fire while someone is using
+  BWOS with a pad. The UI holds a Screen Wake Lock (`navigator.wakeLock`, allowed on `127.0.0.1` as a secure
+  context), and the home button calls `SetThreadExecutionState(ES_DISPLAY_REQUIRED)` to turn displays back on.
+- **Black instead of display-off.** When Windows switches a display off, the projector loses its signal and
+  budget models go to standby, which usually needs the IR remote. BWOS fades to a black layer instead (the UI
+  beneath is `visibility: hidden`, so nothing keeps rendering) and keeps the signal. After `standbyAfter` it
+  releases the wake lock, letting Windows' own display and sleep timers take over.
+- **Open on wake**: `SystemEvents.PowerModeChanged` (Resume), then `SessionSwitch` (unlock within 15 minutes of
+  the wake), because a window can't come to the front over the lock screen.
+- **Turning the projector on/off** would need hardware: laptop GPUs don't do HDMI-CEC, and budget projectors
+  have no network control. An IR blaster (e.g. a Broadlink RM4 mini) that learns the remote's power code is the
+  practical route.
+
+## 7. Casting from a phone
+
+| Protocol | Verdict |
+|---|---|
+| **DIAL** (YouTube's smart-TV discovery) | Open: SSDP `M-SEARCH` for `urn:dial-multiscreen-org:service:dial:1`, a device description with an `Application-URL` header, then `GET/POST/DELETE /apps/YouTube`. The phone POSTs `pairingCode=…&theme=…`; the receiver opens `www.youtube.com/tv?<those params>` and YouTube's TV app links itself to the phone. **Used** (`CastReceiver.cs`). Works with the YouTube app on Android and iOS. |
+| Google Cast (Chromecast, the Pixel "Cast" button) | Receivers must be Google-certified devices (device authentication), so a PC app can't appear there. |
+| Netflix / Prime Video "cast" | Only to their own certified TV apps or Google Cast. Not possible for a third-party receiver. |
+| AirPlay (iPhone, Mac) | Mirroring needs Apple's FairPlay handshake, available only through reverse-engineered open-source receivers. **Used as an optional add-on**: UxPlay 1.74 (GPL-3.0; its own mDNS, so no Bonjour), built by `tools/setup-airplay.ps1` in a private MSYS2 and run by BWOS as a separate process (`AirPlayReceiver.cs`) with fixed ports (`-p`). BWOS finds its video window and places it borderless over the BWOS screen. DRM video (Netflix, Prime) shows black when mirrored. |
+
+Details that mattered:
+- The status XML always says `stopped`, so each cast sends a fresh pairing code even if YouTube TV was closed.
+- Web pages can also reach LAN devices, so requests carrying a browser `Origin` are refused (phone apps send
+  none, or a `package:` origin), and the launch query is filtered to plain `key=value` pairs.
+- Windows' SSDP service already uses UDP 1900; a second listener with `SO_REUSEADDR` still receives multicast.
+- The home screen *claims* the cast once (`/api/cast/claim`), so it works whether BWOS was in front, showing
+  another app (Home first), or not open at all (claimed at start-up).
+
+## 8. Design language & sound
 
 - tvOS-style frosted glass: translucent fills with `blur(42px) saturate(185%)` and a lit 1px top edge. Focus is
   a clear scale-and-lift with a white ring (readable from the couch), a directional parallax nudge, and an idle
   tilt with moving glare, animated through registered custom properties (`@property`), so no per-frame JS.
   Sizing is `1rem = 1/120 of the screen width`, identical on a 720p projector and a 4K TV.
 - Service tiles are tvOS-style app icons: the official icon on its brand colour, with the name only on focus.
+- **App icon**: just the controller, no tile: a minimal DualSense-style silhouette (about 1.55 : 1, deep arch
+  between long grips) in soft white-to-silver, with one point of colour, the lit home button. A fine edge keeps
+  it readable on light backgrounds and a soft shadow lifts it off dark ones. The right half is defined once and
+  mirrored, so it is exactly symmetric. Drawn in `tools/icon/icon.html`, rendered by headless Edge; ICO entries
+  up to 128 px are classic DIBs (every loader reads them), 256 px is PNG; 32 px and below use a bolder edge.
+- **Intro**: the same outline, animated in CSS: two mirrored strokes (`pathLength` 2, one dash of 1) trace it
+  from the top centre and meet at the bottom, then the controller fills in and its home button lights. Once per
+  window session.
 - **Ambient music** is generative. Bell-like notes (a sine plus a faster-fading octave partial) random-walk
   through a pentatonic set matched to the current chord, over a faint pad and a synthesized convolution reverb.
   The chord changes every 30–60 s and note density drifts, so it never repeats. A high-pass keeps it free of

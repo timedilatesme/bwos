@@ -627,14 +627,14 @@
       try { current.focus(); current.click(); } catch (_) {}
     }
     const r = await send('keyboard', {});
-    if (!r || !r.url) { osd((r && r.error) || 'Phone keyboard unavailable – is BWOS running?'); return; }
+    if (!r || !r.url) { osd((r && r.error) || 'Phone remote unavailable – is BWOS running?'); return; }
     hideKeyboard();
     kbd = document.createElement('div');
     kbd.id = 'bwos-kbd';
     kbd.innerHTML =
       `<div class="bwos-kbd-qr">${self.BWOSQR ? self.BWOSQR.svg(r.url, { dark: '#0b0c12' }) : ''}</div>` +
-      '<div class="bwos-kbd-text"><b>Type on your phone</b>' +
-      '<span>Scan with your phone camera (same Wi-Fi). Pick a box on the TV with <em>A</em>, type on the phone.</span>' +
+      '<div class="bwos-kbd-text"><b>Your phone as a remote</b>' +
+      '<span>Scan with your phone camera (same Wi-Fi). Swipe to move, tap to select, or use the Keyboard tab to type into the box picked on the TV.</span>' +
       `<small>${r.url.replace(/^http:\/\//, '')}</small><small>Menu or B to close</small></div>`;
     document.documentElement.append(kbd);
     requestAnimationFrame(() => kbd && kbd.classList.add('on'));

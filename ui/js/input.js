@@ -139,12 +139,20 @@ const KEYS = {
   o: 'options', ContextMenu: 'options', x: 'secondary', m: 'menu', Home: 'home'
 };
 window.addEventListener('keydown', (e) => {
+  // In a text box, keys type; only Enter, Escape and up/down still navigate.
+  const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+  if (typing && !['Enter', 'Escape', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
   const action = KEYS[e.key] || KEYS[e.key.toLowerCase()];
   if (!action) return;
   e.preventDefault();
   if (performance.now() - lastPadInput < 250) return;
   emit(action, e.repeat ? 'key-repeat' : 'key');
 });
+
+// Time spent in a game or a streaming app isn't "idle" time on the BWOS screen.
+const resetIdle = () => { if (!document.hidden) lastAny = performance.now(); };
+window.addEventListener('focus', resetIdle);
+document.addEventListener('visibilitychange', resetIdle);
 
 // Mouse: reveal the cursor on movement, hide it again when a controller is used.
 let cursorTimer = 0;

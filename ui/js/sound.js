@@ -237,5 +237,13 @@ export const sound = {
     stopAmbient(true);
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => note(f, i * 0.07, 0.9, 0.026, { glass: 0.4 }));
   },
+  /** Start-up sound, timed with the intro: a faint rising shimmer while the light traces the
+   *  controller, then a soft open-fifth chord as it fills in and the home button lights. */
+  intro() {
+    if (!prefs.ui) return;
+    note(1568, 0, 1.2, 0.006, { glass: 0.6, slideTo: 2349 });
+    note(98, 0.9, 2.6, 0.03, { glass: 0.15 });
+    [392, 587.33, 783.99, 1174.66].forEach((f, i) => note(f, 1.0 + i * 0.09, 2.0 - i * 0.25, 0.022 - i * 0.003, { glass: 0.45 }));
+  },
   error() { if (prefs.ui) { note(233, 0, 0.16, 0.035, { type: 'triangle', glass: 0 }); note(196, 0.12, 0.22, 0.03, { type: 'triangle', glass: 0 }); } }
 };

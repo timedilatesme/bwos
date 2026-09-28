@@ -143,6 +143,9 @@ namespace Bwos
             }
         }
 
+        /// <summary>The BWOS window, or IntPtr.Zero if it isn't open.</summary>
+        public IntPtr Window { get { return ShellWindow(); } }
+
         private IntPtr ShellWindow()
         {
             var wins = Native.TopLevelWindows(ShellPids(true));
