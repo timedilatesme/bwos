@@ -98,6 +98,9 @@ export function ambientColor(img) {
 
 // Minimal line icon set (24×24, stroke = currentColor)
 const P = {
+  tiles: '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1M12 18v3M8 21h8"/>',
+  bluetooth: '<path d="m7 7 10 10-5 4V3l5 4L7 17"/>',
   home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5h13V10"/>',
   gamepad: '<path d="M7 8h10a4 4 0 0 1 4 4.2l-.4 3.6a2.6 2.6 0 0 1-4.6 1.4L14.6 16H9.4L8 17.2a2.6 2.6 0 0 1-4.6-1.4L3 12.2A4 4 0 0 1 7 8Z"/><path d="M8 11v3M6.5 12.5h3"/><circle cx="15.5" cy="11.6" r=".6" fill="currentColor"/><circle cx="17.4" cy="13.4" r=".6" fill="currentColor"/>',
   tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20.5h8"/>',

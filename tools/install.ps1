@@ -58,6 +58,9 @@ foreach ($item in 'BWOS.exe', 'ui', 'extensions') {
     if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
     Copy-Item (Join-Path $Source $item) $dest -Recurse
 }
+if (Test-Path (Join-Path $Source 'THIRD_PARTY_NOTICES.md')) {
+    Copy-Item (Join-Path $Source 'THIRD_PARTY_NOTICES.md') $target -Force
+}
 
 $shell = New-Object -ComObject WScript.Shell
 $lnk = $shell.CreateShortcut($shortcut)

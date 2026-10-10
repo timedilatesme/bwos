@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>BWOS playback regression fixture</title>
+<link rel="stylesheet" href="../ui/css/app.css">
+<style>#results { padding:32px; font-size:16px; color:#bac5dc; }</style>
+<div id="results">Checking floating controls…</div>
+<button id="playback-status" data-focus hidden>Now playing</button>
+<div class="row" style="position:absolute;top:150px;left:32px" data-row="fixture"><button id="home-card" data-focus>Home shelf item</button></div>
+<div id="now-playing" class="now-playing"></div>
+<div class="modal"><button data-focus style="position:fixed;left:32px;top:200px">Closed modal action</button></div>
+<script type="module">
+import { renderPlayback, focusPlayback, leavePlayback } from '../ui/js/playback.js';
+import { focus } from '../ui/js/focus.js';
+const root = document.getElementById('now-playing');
+const assert = (condition, message) => { if (!condition) throw Error(message); };
+try {
+  const player = { id:'42', url:'https://www.youtube.com/tv', title:'Music playing in the background', paused:false, position:65.5, duration:240 };
+  renderPlayback([player]);
+  const homeCard = document.getElementById('home-card');
+  focus.set(homeCard);
+  assert(focusPlayback() && focus.current.closest('#now-playing'), 'X / Square enters floating controls from a shelf');
+  assert(leavePlayback() && focus.current === homeCard, 'B / Circle returns to the previous item');
+  focus.move('down');
+  assert(focus.current.closest('#now-playing'), 'D-pad down can reach controls from the last shelf');
+  assert(!document.getElementById('playback-status').hidden, 'The Now playing entry is visible');
+  const row = root.firstElementChild;
+  const pause = root.querySelector('[data-action="pause"]');
+  focus.set(pause, { silent:true, instant:true });
+  renderPlayback([{ ...player, position:67.5 }]);
+  assert(root.firstElementChild === row, 'Playback updates must preserve the animated cloud');
+  assert(focus.current === pause && pause.isConnected, 'Playback updates must preserve controller focus');
+  assert(root.querySelector('.now-playing-time').textContent === '1:07 / 4:00', 'Elapsed playback time must advance');
+  assert(root.querySelector('progress').value === 67.5, 'Progress must advance');
+  renderPlayback([{ ...player, paused:true, position:67.5 }]);
+  assert(root.querySelector('[data-action="resume"]'), 'Pause switches to a Play control');
+  assert(focus.current.isConnected, 'Pause preserves usable controller focus');
+  renderPlayback([{ ...player, duration:0 }]);
+  assert(root.querySelector('progress').hidden, 'Live streams hide their duration bar');
+  renderPlayback([{ ...player, paused:true, canControl:false, error:'YouTube could not play this video. Retry the player.' }]);
+  assert(root.querySelector('[data-action="retry"][data-focus]'), 'Failed players expose controller-accessible Retry');
+  assert(root.querySelector('[data-action="resume"]').disabled, 'Failed players do not offer a misleading Play action');
+  renderPlayback([]);
+  assert(root.hidden, 'Stopped players hide the cloud');
+  renderPlayback([player]);
+  document.getElementById('results').textContent = 'PASS: enter/leave player controls, D-pad access, focus retention, timeline, pause, live streams and stop.';
+} catch (error) { document.getElementById('results').textContent = 'FAIL: ' + error.message; }
+</script>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -27,6 +28,9 @@ namespace Bwos
         private readonly int port;
         private readonly List<HttpListenerResponse> streams = new List<HttpListenerResponse>();
         private readonly object streamGate = new object();
+        private readonly List<WebSocket> playbackSockets = new List<WebSocket>();
+        private readonly object socketGate = new object();
+        public int PlaybackClients { get { lock (socketGate) return playbackSockets.Count; } }
         public readonly string Token;
 
         public Func<Request, object> ApiHandler;
@@ -99,11 +103,22 @@ namespace Bwos
 
         public void Stop()
         {
+            lock (socketGate) { foreach (var socket in playbackSockets) socket.Abort(); playbackSockets.Clear(); }
             try { listener.Stop(); } catch { }
         }
 
         public void Broadcast(string evt, object data)
         {
+            if (evt == "playback" || evt == "ping")
+            {
+                byte[] notification = Encoding.UTF8.GetBytes(evt);
+                lock (socketGate)
+                    for (int i = playbackSockets.Count - 1; i >= 0; i--)
+                    {
+                        try { if (!playbackSockets[i].SendAsync(new ArraySegment<byte>(notification), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1000)) throw new IOException("Playback connection stalled"); }
+                        catch { playbackSockets[i].Abort(); playbackSockets.RemoveAt(i); }
+                    }
+            }
             string payload = "event: " + evt + "\ndata: " + (data == null ? "{}" : Json.Serialize(data)) + "\n\n";
             byte[] bytes = Encoding.UTF8.GetBytes(payload);
             lock (streamGate)
@@ -161,6 +176,11 @@ namespace Bwos
         {
             var res = ctx.Response;
             string method = ctx.Request.HttpMethod;
+            if (method == "GET" && parts.Length == 2 && parts[1] == "playback-events" && ctx.Request.IsWebSocketRequest)
+            {
+                if (ctx.Request.QueryString["t"] != Token) { Send(res, 401, "text/plain", new byte[0]); return; }
+                ConnectPlayback(ctx); return;
+            }
 
             // Images and the event stream are loaded by <img>/EventSource which can't set headers.
             bool open = method == "GET" && parts.Length > 1 && (parts[1] == "art" || parts[1] == "avatar");
@@ -211,6 +231,23 @@ namespace Bwos
             }
             if (result == null) { SendJson(res, 404, Err("not found")); return; }
             SendJson(res, 200, result);
+        }
+        private async void ConnectPlayback(HttpListenerContext context)
+        {
+            WebSocket socket = null;
+            try
+            {
+                var connected = await context.AcceptWebSocketAsync(null); socket = connected.WebSocket;
+                lock (socketGate) { if (playbackSockets.Count >= 4) { socket.Abort(); return; } playbackSockets.Add(socket); }
+                var buffer = new byte[128];
+                while (socket.State == WebSocketState.Open)
+                {
+                    var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    if (result.MessageType == WebSocketMessageType.Close) break;
+                }
+            }
+            catch { }
+            finally { if (socket != null) { lock (socketGate) playbackSockets.Remove(socket); socket.Dispose(); } }
         }
 
         private void ServeStatic(HttpListenerResponse res, string[] parts)

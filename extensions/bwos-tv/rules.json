@@ -1,7 +1,7 @@
 [
   {
     "id": 1,
-    "priority": 1,
+    "priority": 10,
     "action": {
       "type": "modifyHeaders",
       "requestHeaders": [
@@ -12,8 +12,8 @@
       ]
     },
     "condition": {
-      "requestDomains": ["www.youtube.com"],
-      "resourceTypes": ["main_frame", "sub_frame", "xmlhttprequest", "script", "other"]
+      "regexFilter": "^https://www\\.youtube\\.com/tv(?:[/?]|$)",
+      "resourceTypes": ["main_frame", "sub_frame"]
     }
   }
 ]

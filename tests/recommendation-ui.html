@@ -1,0 +1,89 @@
+<!doctype html><meta charset="utf-8"><title>BWOS recommendation regression</title>
+<link rel="stylesheet" href="../ui/css/app.css">
+<div id="results" style="position:fixed;z-index:1000;top:0;background:#15232d;padding:8px">Running…</div>
+<section class="view active"><div class="view-scroll"><div class="scroller" id="fixture"></div></div></section>
+<div id="provider" style="position:absolute;top:0;left:-3000px;width:1000px"></div>
+<script src="../extensions/bwos-tv/recommendations.js"></script>
+<script type="module">
+import {h} from '../ui/js/util.js';
+import {recommendationContents,serviceSwitcher} from '../ui/js/recommendations.js';
+import {focus} from '../ui/js/focus.js';
+import {artworkImage} from '../ui/js/artwork.js';
+import {settingsSections} from '../ui/js/settings-sections.js';
+import {setVoiceScope,showVoiceNumbers,hideVoiceNumbers,voiceNumber} from '../ui/js/voice.js';
+const assert=(condition,message)=>{if(!condition)throw Error(message);};
+const root=document.querySelector('#fixture'),provider=document.querySelector('#provider');
+try {
+  provider.innerHTML='<div class="lolomoRow"><h2 class="row-header-title">Picked for you</h2><div class="title-card"><a href="/title/123?track=private"><img alt="A film" src="https://assets.nflxext.com/film.jpg"></a></div><a href="https://evil.test/title/123">Bad card</a></div>';
+  const netflix=BWOSRecommendationCollector.collect(provider,{hostname:'www.netflix.com',pathname:'/browse',search:'',hash:'',href:'https://www.netflix.com/browse'});
+  assert(netflix.rows[0].title==='Picked for you' && netflix.rows[0].items.length===1,'Provider shelf labels and valid rendered cards import');
+  assert(netflix.rows[0].items[0].url==='https://www.netflix.com/title/123','Tracking query stripped');
+  provider.innerHTML='<div class="lolomoRow"><h2>Browse links</h2><div class="title-card"><a href="/browse?jbv=80117470&track=private"><span class="fallback-text">Browse film</span></a></div><div class="title-card" data-title-id="987"><span class="fallback-text">Attribute film</span></div><div class="title-card" data-title-id="bad"><span>Invalid</span></div></div>';
+  const browse=BWOSRecommendationCollector.collect(provider,{hostname:'www.netflix.com',pathname:'/browse',search:'',hash:'',href:'https://www.netflix.com/browse'});
+  assert(browse.rows[0].items.length===2 && browse.rows[0].items[0].url==='https://www.netflix.com/title/80117470','Netflix browse links and numeric rendered title identifiers import');
+  assert(BWOSRecommendationCollector.titleLink('https://evil.test/browse?jbv=123','https://www.netflix.com/','netflix')===null,'Browse-link canonicalization still rejects foreign domains');
+  provider.innerHTML='<div class="lolomoRow"><h2>Lazy artwork</h2><div class="title-card"><a href="/title/123"><span class="fallback-text">Lazy film</span><img class="boxart" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///w==" data-src="https://occ.nflxso.net/film.jpg?width=640"></a></div></div>';
+  const lazy=BWOSRecommendationCollector.collect(provider,{hostname:'www.netflix.com',pathname:'/browse',search:'',hash:'',href:'https://www.netflix.com/browse'});
+  assert(lazy.rows[0].items[0].artwork==='https://occ.nflxso.net/film.jpg?width=640','Lazy artwork and CDN resize queries import');
+  provider.innerHTML='<div class="lolomoRow"><h2>CSS artwork</h2><div class="title-card"><a href="/title/123" title="Background film"><div style="width:200px;height:100px;background-image:url(https://occ.nflxso.net/background.jpg)"></div></a></div></div>';
+  const background=BWOSRecommendationCollector.collect(provider,{hostname:'www.netflix.com',pathname:'/browse',search:'',hash:'',href:'https://www.netflix.com/browse'});
+  assert(background.rows[0].items[0].artwork==='https://occ.nflxso.net/background.jpg','Provider background-image artwork imports');
+  assert(BWOSRecommendationCollector.collect(provider,{hostname:'www.netflix.com',pathname:'/watch/123'})===null,'Playback page does not overwrite discovery');
+  provider.innerHTML='<section data-testid="carousel"><h2>Movies we think you will like</h2><article><a href="/detail/ABC"><img alt="Prime film" src="https://m.media-amazon.com/a.jpg"></a></article></section>';
+  const prime=BWOSRecommendationCollector.collect(provider,{hostname:'www.primevideo.com',pathname:'/',search:'',hash:'',href:'https://www.primevideo.com/'});
+  assert(prime.rows[0].items[0].title==='Prime film','Prime rendered card import');
+  provider.innerHTML='<ytd-rich-grid-renderer><ytd-rich-item-renderer><a id="video-title-link" href="/watch?v=M7lc1UVf-VE" title="YouTube demo">YouTube demo</a><img src="https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg"></ytd-rich-item-renderer></ytd-rich-grid-renderer>';
+  const youtube=BWOSRecommendationCollector.collect(provider,{hostname:'www.youtube.com',pathname:'/',search:'',hash:'',href:'https://www.youtube.com/'});
+  assert(youtube.rows[0].items[0].title==='YouTube demo','YouTube home cards import');
+  provider.innerHTML='<ytd-rich-grid-renderer><yt-lockup-view-model><a href="/watch?v=M7lc1UVf-VE"><img src="https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg"></a><h3><a class="ytLockupMetadataViewModelTitle" href="/watch?v=M7lc1UVf-VE">Modern home title</a></h3></yt-lockup-view-model></ytd-rich-grid-renderer>';
+  const modern=BWOSRecommendationCollector.collect(provider,{hostname:'www.youtube.com',pathname:'/',search:'',hash:'',href:'https://www.youtube.com/'});
+  assert(modern.rows[0].items.length===1 && modern.rows[0].items[0].title==='Modern home title','Modern YouTube thumbnail anchors resolve their title from the card');
+  provider.innerHTML='<ytd-rich-grid-renderer>'+Array.from({length:75},(_,i)=>'<ytd-rich-item-renderer><a id="video-title-link" href="/watch?v='+String(i).padStart(11,'0')+'" title="Home video '+i+'">Home video '+i+'</a></ytd-rich-item-renderer>').join('')+'</ytd-rich-grid-renderer><ytd-shelf-renderer><h2>Small topic shelf</h2><a href="/watch?v=M7lc1UVf-VE" title="Topic video">Topic video</a></ytd-shelf-renderer>';
+  const fullYoutube=BWOSRecommendationCollector.collect(provider,{hostname:'www.youtube.com',pathname:'/',search:'',hash:'',href:'https://www.youtube.com/'});
+  assert(fullYoutube.rows.reduce((n,row)=>n+row.items.length,0)===76,'YouTube main grid is preserved alongside topic shelves and exceeds the old 30-card limit');
+  provider.innerHTML='<section data-testid="collection"><h2>Prime collection</h2>'+Array.from({length:8},(_,i)=>'<article data-testid="collection-card"><a href="/detail/ABC'+i+'" title="Film '+i+'"><img alt="Film '+i+'" src="https://m.media-amazon.com/a.jpg"></a></article>').join('')+'</section>';
+  const groupedPrime=BWOSRecommendationCollector.collect(provider,{hostname:'www.primevideo.com',pathname:'/',search:'',hash:'',href:'https://www.primevideo.com/'});
+  assert(groupedPrime.rows.length===1 && groupedPrime.rows[0].items.length===8,'Nested Prime collection-card containers do not become one-card rows');
+  provider.remove();
+  let missing=false;
+  const fallback=artworkImage({poster:'/tests/missing.jpg',artwork:'/tests/art-fixture.svg'},{loading:'eager',missing:()=>{missing=true;}});
+  root.append(fallback);
+  await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(Error('Image fallback did not load')),4000);fallback.addEventListener('load',()=>{if(fallback.naturalWidth>1){clearTimeout(timeout);resolve();}});});
+  assert(!missing && fallback.classList.contains('ready') && fallback.naturalWidth===960,'Broken poster retries imported artwork before showing a placeholder');
+  const opened=new Set();
+  const categories=settingsSections(h('div',null,h('div',null,h('h3',null,'Voice'),h('button',{'data-focus':true},'Microphone')),h('div',null,h('h3',null,'System'),h('button',{'data-focus':true},'Sounds'))),opened);
+  root.replaceChildren(categories);focus.setScope(()=>root);focus.set(categories.querySelector('summary'));focus.move('down');
+  assert(focus.current.textContent==='System','Controller skips hidden settings and navigates category headers');
+  setVoiceScope(()=>root);showVoiceNumbers();assert(!voiceNumber(3),'Voice choices skip hidden settings');hideVoiceNumbers();
+  const voice=categories.querySelector('details');voice.querySelector('summary').click();
+  await new Promise(resolve=>voice.addEventListener('toggle',resolve,{once:true}));
+  assert(voice.open && opened.has('Voice'),'Settings categories expand and preserve their state');
+  focus.set(voice.querySelector('summary'));focus.move('down');assert(focus.current.textContent==='Microphone','Expanded settings remain reachable by controller');
+  const state={watch:[{id:'netflix',name:'Netflix',color:'#e50914'},{id:'prime',name:'Prime Video',color:'#1a98ff'},{id:'youtube',name:'YouTube'}],
+    forYou:[{id:'movies',title:'Movies for tonight',items:Array.from({length:9},(_,i)=>({id:'film'+i,title:'Sample film '+i,description:'A fixture title for checking recommendation navigation and readable TV typography.',type:'movie',year:2025,genres:['Adventure'],offers:[{app:'netflix',name:'Netflix',url:'https://www.netflix.com/title/'+i}]}))}]};
+  const factories={title:item=>h('button.card.card--portrait.recommendation-title',{'data-focus':true,dataset:{kind:'title',id:item.id,key:'title:'+item.id}},h('div.card-art'),h('div.card-label',null,item.title)),resume:()=>h('button'),
+    row:(id,title,cards)=>h('section.row',{dataset:{row:id}},h('h3.row-title',null,title),h('div.row-viewport',null,h('div.row-track',null,cards)))};
+  root.replaceChildren(serviceSwitcher(state,'netflix'),recommendationContents(state,{service:'netflix'},factories));
+  const tv=document.createElement('div');tv.innerHTML='<ytlr-shelf-renderer><ytlr-tile-renderer data-video-id="00000000000" aria-label="Rendered TV video"><span>Rendered TV video</span></ytlr-tile-renderer></ytlr-shelf-renderer>';document.body.append(tv);
+  const tvCards=BWOSRecommendationCollector.collect(document,{hostname:'www.youtube.com',pathname:'/tv',search:'',hash:'',href:'https://www.youtube.com/tv'});
+  assert(tvCards.rows.some(row=>row.items.some(item=>item.title==='Rendered TV video' && item.url==='https://www.youtube.com/watch?v=00000000000')),'Rendered TV identifiers and accessible titles become safe video cards');tv.remove();
+  assert(root.querySelector('.service-chip[data-id="netflix"]').getAttribute('aria-label')==='Netflix','Logo filters retain accessible provider names');
+  assert(root.querySelector('.service-chip[data-id="netflix"]').textContent.trim()==='','Provider names do not crowd the icon row');
+  focus.setScope(()=>root);
+  const first=root.querySelector('.row [data-focus]');focus.set(first,{instant:true});
+  focus.move('right');assert(focus.current.dataset.id==='film1','D-pad traverses recommendations');
+  focus.move('up');assert(!focus.current.closest('.row'),'D-pad can leave shelves to featured controls');
+  assert(root.querySelector('.recommendation-source').textContent.includes('BWOS picks'),'Catalogue source is labeled');
+  assert(!root.querySelector('.recommendation-info').open,'Source explanations stay collapsed instead of crowding the screen');
+  root.replaceChildren(serviceSwitcher(state,'netflix'),recommendationContents(state,{service:'netflix',query:'missing'},factories));
+  assert(root.querySelector('.recommendation-empty') && !root.querySelector('.recommendation-feature'),'Search-empty state contains no unrelated feature');
+  const youtubeState={watch:[{id:'youtube',name:'YouTube'}],recommendations:{youtube:{updated:Date.now()/1000,rows:[{id:'grid',title:'Recommended',items:Array.from({length:12},(_,i)=>({id:'video'+i,title:'Video '+i,url:'https://www.youtube.com/watch?v='+String(i).padStart(11,'0'),offers:[{app:'youtube',url:'https://www.youtube.com/watch?v='+String(i).padStart(11,'0')}]}))}]}}};
+  root.replaceChildren(recommendationContents(youtubeState,{service:'youtube'},factories));
+  const gridCards=[...root.querySelectorAll('.media-video')];focus.set(gridCards[0],{instant:true});focus.move('down');
+  assert(focus.current===gridCards[4],'Down moves one grid row in the same column');
+  focus.move('right');assert(focus.current===gridCards[5],'Right stays within the video grid');
+  focus.move('up');assert(focus.current===gridCards[1],'Up returns to the previous grid row');
+  root.replaceChildren(serviceSwitcher(state,'netflix'),recommendationContents(state,{service:'netflix'},factories));
+  document.querySelector('#results').textContent='PASS: lazy/CSS provider artwork, image fallback, safe links, compact source labels, empty search and D-pad focus';
+} catch(error) {document.querySelector('#results').textContent='FAIL: '+error.message;throw error;}
+</script>

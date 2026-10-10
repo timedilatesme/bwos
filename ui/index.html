@@ -26,9 +26,13 @@
       <button class="tab" data-focus data-tab="foryou">For You</button>
       <button class="tab" data-focus data-tab="games">Games</button>
       <button class="tab" data-focus data-tab="watch">Apps</button>
+      <button class="tab" data-focus data-tab="devices">Devices</button>
       <button class="tab" data-focus data-tab="settings">Settings</button>
     </nav>
     <div class="status">
+      <button id="sharing-status" class="btn sharing-status" data-focus data-kind="screenSharing" aria-label="Screen sharing controls" hidden>Sharing</button>
+      <button id="playback-status" class="playback-status" data-focus data-kind="playbackPanel" aria-label="Now playing controls" title="Now playing · X / Square" hidden>♫ Now playing</button>
+      <button id="voice-status" class="voice-status" data-focus data-kind="voiceHelp" aria-label="Voice control" title="Voice control"></button>
       <button id="pad-status" class="pad-status" data-focus data-kind="controls" title="Controller settings"></button>
       <div id="clock" class="clock">--:--</div>
       <button id="user" class="user" data-focus data-kind="profile" title="Your name"></button>
@@ -52,18 +56,7 @@
     </section>
 
     <section class="view" id="view-foryou" data-view="foryou">
-      <div class="hero">
-        <div class="hero-kicker"></div>
-        <div class="hero-titlebox">
-          <img class="hero-logo" alt="">
-          <h1 class="hero-title"></h1>
-        </div>
-        <div class="hero-meta"></div>
-        <p class="hero-desc"></p>
-      </div>
-      <div class="rows-viewport">
-        <div class="rows scroller" id="foryou-rows" data-anchor="top" data-memo="foryou-rows"></div>
-      </div>
+      <div class="view-scroll"><div class="scroller" id="foryou-rows"></div></div>
     </section>
 
     <section class="view" id="view-games" data-view="games">
@@ -82,6 +75,10 @@
       <div class="view-scroll">
         <div class="scroller" id="watch-scroller"></div>
       </div>
+    </section>
+
+    <section class="view" id="view-devices" data-view="devices">
+      <div class="view-scroll"><div class="scroller" id="devices-scroller"></div></div>
     </section>
 
     <section class="view" id="view-settings" data-view="settings">
@@ -111,6 +108,14 @@
 
   <div id="modal" class="modal" data-group="modal"></div>
   <div id="toasts" class="toasts"></div>
+  <aside id="embedded-player" class="embedded-player" aria-label="YouTube player" data-group="embedded" hidden></aside>
+  <aside id="now-playing" class="now-playing" aria-label="Background playback" data-group="playback" hidden></aside>
+  <div id="assistant" class="assistant" data-state="paused" hidden>
+    <div class="assistant-orb" aria-hidden="true"><i></i><i></i><i></i><span></span></div>
+    <div class="assistant-copy"><div id="assistant-label" class="assistant-label">Ready when you are</div>
+      <div id="voice-feedback" class="voice-feedback" role="status" hidden></div>
+    </div>
+  </div>
 
   <!-- Start-up: light traces the controller's outline from the top centre down both sides, the
        controller fills in, and its home button lights. Same shape as tools/icon/icon.html. -->

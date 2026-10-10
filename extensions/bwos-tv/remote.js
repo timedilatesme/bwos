@@ -1,7 +1,7 @@
 // BWOS TV – controller layer for streaming websites shown inside the BWOS window.
 //
 // BWOS.exe turns the controller into real key presses while a site is open
-// (D-pad → arrows, A → Enter, B → Escape, X → Space, Menu → F23, Home → F24 + Ctrl+Shift+Home,
+// (D-pad → arrows, A → Enter, B → Escape, X → Space, Menu → F23, Home → F24,
 // right stick → mouse). This script turns those keys into TV-style navigation on *any* site:
 //   arrows  move a focus ring between the things you can select (spatial navigation)
 //   Enter   selects / plays;  inside a video: play / pause
@@ -13,6 +13,93 @@
 // understands the keys natively, so there only Home/Back/Menu are added.
 
 (() => {
+  if(location.hostname==='www.youtube.com' && location.pathname.startsWith('/embed/')) {
+    let active=false,current=null,idle;
+    const parentOrigin='http://127.0.0.1:47913';
+    const reply=ok=>window.parent.postMessage({type:'bwos-native-controls-state',active,ok},parentOrigin);
+    const visible=element=>{
+      const bounds=element.getBoundingClientRect(),style=getComputedStyle(element);
+      return bounds.width>0 && bounds.height>0 && !element.disabled && element.getAttribute?.('aria-disabled')!=='true' && !element.closest('[aria-hidden="true"]') && style.display!=='none' && style.visibility!=='hidden';
+    };
+    const menu=()=>[...document.querySelectorAll('.ytp-settings-menu,[role="menu"]')].find(visible);
+    const settingsButton=()=>document.querySelector('.ytp-settings-button,.player-settings-icon');
+    const playButton=()=>document.querySelector('.ytp-play-button,.player-control-play-pause-icon');
+    const buttons=()=>[...document.querySelectorAll('.ytp-chrome-controls button,.player-control-play-pause-icon,.player-control-seek-icon-a11y,.player-middle-controls-prev-next-button,.ytdVolumeControlsMuteIconButton,.ytmClosedCaptioningButtonButton,.player-settings-icon,.fullscreen-icon')].filter(visible);
+    const items=()=>[...(menu()?.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"]') || [])].filter(visible);
+    const timeline=()=>document.querySelector('.ytp-progress-bar[role="slider"],.ytPlayerProgressBarDragContainer[role="slider"]');
+    const select=element=>{if(!element || !visible(element))return false;current=element;element.focus({preventScroll:true,focusVisible:true});return true;};
+    const hide=()=>{
+      clearTimeout(idle);active=false;
+      document.activeElement?.blur();current=null;reply(true);
+      const toggle=document.querySelector('#player-controls-a11y-toggle');
+      if(toggle?.getAttribute('aria-label')==='Hide player controls')toggle.click();
+    };
+    function reveal() {
+      active=true;
+      const player=document.querySelector('#movie_player');
+      const toggle=document.querySelector('#player-controls-a11y-toggle');
+      if(toggle?.getAttribute('aria-label')==='Show player controls')toggle.click();
+      player?.dispatchEvent(new MouseEvent('mousemove',{bubbles:true,clientX:innerWidth/2,clientY:innerHeight-25}));
+      clearTimeout(idle);
+      idle=setTimeout(()=>{const video=document.querySelector('video');if(!menu() && video && !video.paused)hide();},5000);
+    }
+    function navigate(action) {
+      if(action==='hide'){hide();return true;}
+      reveal();
+      const choices=items(),row=buttons(),bar=timeline();
+      if(action==='back') {
+        if(choices.length){
+          const back=menu()?.querySelector('.ytp-panel-back-button');
+          if(back && visible(back)){back.click();select(items()[0]);return true;}
+          const close=menu()?.closest('[role="dialog"]')?.querySelector('button.close-button');
+          (close || settingsButton())?.click();select(settingsButton());
+        }
+        else hide();
+        return true;
+      }
+      if(action==='settings')return select(settingsButton()) && (settingsButton().click(),true);
+      if(action==='show')return select(playButton() || row[0]);
+      if(action==='accept') {
+        if(current?.isConnected && visible(current) && current!==bar){current.click();const next=items();if(next.length)select(next[0]);return true;}
+        return select(playButton() || row[0]);
+      }
+      if(choices.length) {
+        const index=choices.indexOf(current),direction=['left','up'].includes(action)?-1:1;
+        return select(choices[Math.max(0,Math.min(choices.length-1,index<0?0:index+direction))]);
+      }
+      if(action==='up')return select(bar) || select(row[0]);
+      if(action==='down')return select(playButton() || row[0]);
+      if(['left','right'].includes(action)) {
+        if(current===bar) {
+          // Dispatch the provider's own timeline shortcut, preserving ads/live-stream restrictions.
+          const key=action==='left'?'ArrowLeft':'ArrowRight',keyCode=action==='left'?37:39;
+          bar.dispatchEvent(new KeyboardEvent('keydown',{key,code:key,keyCode,which:keyCode,bubbles:true,cancelable:true}));
+          return true;
+        }
+        const index=row.indexOf(current);
+        return select(row[Math.max(0,Math.min(row.length-1,index<0?0:index+(action==='left'?-1:1)))]);
+      }
+      return false;
+    }
+    addEventListener('message',event=>{
+      if(event.source!==window.parent || event.origin!==parentOrigin || event.data?.type!=='bwos-native-controls' || !['show','hide','up','down','left','right','accept','back','settings'].includes(event.data.action))return;
+      const ok=navigate(event.data.action);if(!ok)active=false;reply(ok);
+    });
+    addEventListener('playing',()=>{if(active)reveal();},true);
+    addEventListener('keydown',event=>{
+      if(event.ctrlKey || event.altKey || event.metaKey)return;
+      if(event.key==='F24' || event.key==='Home'){event.preventDefault();chrome.runtime.sendMessage({type:'home'});}
+      else if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter','Escape',' ','x','p','f','o','m','ContextMenu','F23'].includes(event.key)) {
+        // Timeline events dispatched above belong to YouTube's native slider handler.
+        if(!event.isTrusted && event.target===timeline())return;
+        event.preventDefault();event.stopImmediatePropagation();
+        const action={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down',Enter:'accept',Escape:'back',f:'settings',o:'settings',m:'settings',ContextMenu:'settings',F23:'settings'}[event.key];
+        if(action && (active || menu())){const ok=navigate(action);reply(ok);}
+        else chrome.runtime.sendMessage({type:'key-to-top',key:event.key});
+      }
+    },true);
+    return; // Navigate YouTube's native on-video controls without creating an overlay.
+  }
   'use strict';
 
   // Inside an embedded frame (video ads love to grab keyboard focus): never let it trap the
@@ -32,7 +119,8 @@
 
   // Keys handed over from embedded frames arrive here and are replayed as if pressed on the page.
   try {
-    chrome.runtime.onMessage.addListener((msg) => {
+    chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+      if (msg?.type === 'show-keyboard') { showKeyboard().then(() => reply({ ok: true }), () => reply({ ok: false })); return true; }
       if (msg && msg.type === 'key') {
         window.dispatchEvent(new KeyboardEvent('keydown', { key: msg.key, bubbles: true, cancelable: true }));
       }
@@ -43,7 +131,10 @@
   let HOME = 'http://127.0.0.1:47913/';
   try { chrome.storage.local.get('home', (v) => { if (v && v.home) HOME = v.home; }); } catch (_) {}
 
-  const goHome = () => { location.href = HOME; };
+  const goHome = () => {
+    try { chrome.runtime.sendMessage({ type: 'home' }, () => { if (chrome.runtime.lastError) location.href = HOME; }); }
+    catch { location.href = HOME; }
+  };
 
   // ------------------------------------------------------------------ helpers
 
@@ -442,7 +533,7 @@
   // ------------------------------------------------------------------ auto full screen
   // Sites without their own TV player (Einthusan, Tubi, Plex…) play video inside the page.
   // As soon as the film starts, its player fills the whole screen; B leaves full screen.
-  const OWN_PLAYER = /(netflix|primevideo|amazon|youtube)\.com$/;
+  const requestedPlayer = /bwos-play/.test(location.hash);
   let filled = null;   // { box, video }
 
   // Whole-player containers of sites we know (they hold the film AND the ad layer).
@@ -459,6 +550,8 @@
   }
 
   function playerBox(v) {
+    const native=v.closest('.watch-video--player-view,.atvwebplayersdk-player-container,#movie_player');
+    if(native) return native;
     const known = v.closest(KNOWN_PLAYERS);
     if (known) return known;
     // The smallest wrapper around the video that also holds the site's own controls…
@@ -475,7 +568,8 @@
   }
 
   function enterFill(v) {
-    if (filled || OWN_PLAYER.test(HOST)) return;
+    if (filled || /youtube\.com$/.test(HOST)) return;
+    if (/(netflix|primevideo|amazon)\.com$/.test(HOST) && !requestedPlayer && !/\/watch\//.test(location.pathname)) return;
     const r = v.getBoundingClientRect();
     if (r.width * r.height > innerWidth * innerHeight * 0.92) return; // already full screen
     const box = playerBox(v);
@@ -524,8 +618,11 @@
         osd(v.paused ? 'Paused' : 'Playing');
         break;
       }
-      case 'ArrowLeft': v.currentTime = Math.max(0, v.currentTime - 10); osd('◀ ' + fmt(v.currentTime)); break;
-      case 'ArrowRight': v.currentTime = Math.min(v.duration - 1, v.currentTime + 10); osd('▶ ' + fmt(v.currentTime)); break;
+      case 'ArrowLeft': case 'ArrowRight':
+        if(adShowing(v)){osd('Advertisement – it will continue by itself');break;}
+        if(!Number.isFinite(v.duration) || v.duration<=0){osd('This stream cannot seek');break;}
+        v.currentTime = Math.max(0,Math.min(Math.max(0,v.duration-.1),v.currentTime+(e.key==='ArrowRight'?10:-10)));
+        osd((e.key==='ArrowRight'?'▶ ':'◀ ')+fmt(v.currentTime));break;
       case 'ArrowUp': case 'ArrowDown': pokePlayer(v); osd(fmt(v.currentTime) + ' / ' + fmt(v.duration)); break;
       default: handled = false;
     }
@@ -552,7 +649,8 @@
     for (const v of document.querySelectorAll('video')) {
       const r = v.getBoundingClientRect();
       const a = r.width * r.height;
-      if (a > area && v.duration > 120 && isFinite(v.duration) && !v.muted) { best = v; area = a; }
+      const eligible=requestedPlayer ? v.readyState>0 && !v.ended : v.duration>120 && isFinite(v.duration) && !v.muted;
+      if (a > area && eligible) { best = v; area = a; }
     }
     return best;
   }

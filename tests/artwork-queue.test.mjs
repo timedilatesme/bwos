@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {artworkSources} from '../ui/js/artwork.js';
+import {videoQueue} from '../ui/js/playback-queue.js';
+assert.deepEqual(artworkSources({artwork:'https://cdn.example/card.jpg'}),['https://cdn.example/card.jpg'],'Imported artwork does not require a poster field');
+assert.deepEqual(artworkSources({poster:'p',artwork:'a',backdrop:'b'},true),['b','a','p'],'Landscape cards try backdrop, then artwork, then poster');
+assert.deepEqual(artworkSources({poster:'p',artwork:'p',backdrop:'b'}),['p','b'],'Fallback URLs are never retried repeatedly');
+assert.equal(artworkSources({url:'https://www.youtube.com/watch?v=M7lc1UVf-VE'})[0],'https://i.ytimg.com/vi/M7lc1UVf-VE/hqdefault.jpg','YouTube derives artwork even when the provider image is missing');
+const selected={id:'M7lc1UVf-VE',title:'Selected',position:12};
+const queue=videoQueue(selected,[{id:'jNQXAC9IVRw',title:'First'},{id:'feed:youtube:2',url:'https://youtu.be/M7lc1UVf-VE',title:'Old'},{id:'M7lc1UVf-VE'}, {id:'invalid'}]);
+assert.deepEqual(queue.map(item=>item.id),['jNQXAC9IVRw','M7lc1UVf-VE'],'Queue retains shelf order, deduplicates canonical IDs and excludes invalid links');
+assert.equal(queue[1].title,'Selected');assert.equal(queue[1].position,12,'Selected resume position survives normalization');
+assert.equal(videoQueue(selected,[{id:'jNQXAC9IVRw'}])[0].id,selected.id,'A selected item outside the shelf is included first');
+console.log('PASS: imported artwork, ordered image fallbacks, YouTube thumbnails and canonical shelf queues');

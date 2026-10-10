@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8"><title>BWOS provider fullscreen regression</title>
+<div id="results">Running…</div>
+<script type="module">
+const source=await (await fetch('../extensions/bwos-tv/remote.js')).text();
+const css=await (await fetch('../extensions/bwos-tv/remote.css')).text();
+const assert=(value,message)=>{if(!value)throw Error(message);};
+try {
+  for(const mobile of [false,true]) {
+    const frame=document.createElement('iframe');frame.style.cssText='width:960px;height:540px;border:0';document.body.append(frame);
+    const doc=frame.contentDocument,win=frame.contentWindow;
+    const playClass=mobile?'player-control-play-pause-icon':'ytp-play-button';
+    const settingsClass=mobile?'player-settings-icon':'ytp-settings-button';
+    const sliderClass=mobile?'ytPlayerProgressBarDragContainer':'ytp-progress-bar';
+    doc.body.innerHTML=`<style>body{margin:0}#movie_player{width:100vw;height:100vh;background:#111}button{width:100px;height:50px}.native-controls{position:absolute;bottom:0}[role=slider]{width:90vw;height:30px}[role=menuitem]{display:block;height:40px;width:300px}</style><div id="movie_player"><video></video><div class="native-controls ytp-chrome-controls"><div role="slider" tabindex="0" class="${sliderClass}"></div><button class="${playClass}">Play</button><button class="${settingsClass}">Settings</button></div></div><div class="ytp-settings-menu" role="menu" style="display:none"><button role="menuitem">Quality</button><button role="menuitem">Captions</button></div>`;
+    const replies=[],handlers={};let clicks=0,seeks=0;
+    const parent={postMessage:message=>replies.push(message)},standalone={parent};
+    const play=doc.querySelector('.'+playClass),settings=doc.querySelector('.'+settingsClass),menu=doc.querySelector('[role=menu]'),bar=doc.querySelector('[role=slider]');
+    play.onclick=()=>clicks++;settings.onclick=()=>{menu.style.display=menu.style.display==='none'?'block':'none';};
+    bar.addEventListener('keydown',event=>{if(event.key==='ArrowRight' && event.keyCode===39)seeks++;});
+    const initialize=new win.Function('window','location','chrome','addEventListener','setTimeout','clearTimeout',source);
+    initialize(standalone,{hostname:'www.youtube.com',pathname:'/embed/M7lc1UVf-VE'},{runtime:{sendMessage(){}}},(type,handler)=>{handlers[type]=handler;},()=>0,()=>{});
+    const command=action=>handlers.message({source:parent,origin:'http://127.0.0.1:47913',data:{type:'bwos-native-controls',action}});
+    command('up');assert(doc.activeElement===bar,'Controller focuses the native timeline');
+    command('right');assert(seeks===1,'Native timeline receives one seek');
+    command('down');command('accept');assert(clicks===1,'Controller activates the native Play button');
+    command('settings');command('down');assert(doc.activeElement.textContent==='Quality','Controller reaches the native settings item');
+    command('back');assert(menu.style.display==='none','Back dismisses native menus');
+    command('back');assert(replies.at(-1).active===false,'Back returns to viewing');
+    assert(!doc.querySelector('#bwos-ring,#bwos-hint'),'Embedded player receives no foreign overlay');
+    assert(doc.querySelector('#movie_player').getBoundingClientRect().height===win.innerHeight,'Controls do not shrink the video');
+    frame.remove();
+  }
+  for(const hostname of ['www.netflix.com','www.primevideo.com']) {
+    const frame=document.createElement('iframe');frame.style.cssText='width:960px;height:540px;border:0';document.body.append(frame);
+    const doc=frame.contentDocument,win=frame.contentWindow;
+    doc.body.innerHTML='<style>'+css+'</style><div class="watch-video--player-view atvwebplayersdk-player-container" style="width:500px;height:280px"><video style="width:100%;height:100%"></video><button id="captions">Native captions</button><div id="ad-container" style="display:none">Native advertisement layer</div></div>';
+    const video=doc.querySelector('video'),box=video.parentElement;let paused=false;
+    Object.defineProperties(video,{duration:{get:()=>hostname.includes('netflix')?60:600},paused:{get:()=>paused},muted:{get:()=>false},readyState:{get:()=>4}});
+    video.play=async()=>{paused=false;};video.pause=()=>{paused=true;};
+    const keys=[];
+    const chrome={runtime:{onMessage:{addListener(){}},sendMessage(message,reply){reply?.({});}},storage:{local:{get(key,reply){reply({home:'http://127.0.0.1:47913/'});}}}};
+    const standalone={dispatchEvent:event=>win.dispatchEvent(event)};standalone.top=standalone;
+    const initialize=new win.Function('window','location','chrome','history','setInterval','setTimeout','addEventListener',source);
+    initialize(standalone,{hostname,pathname:hostname.includes('netflix')?'/watch/123':'/detail/ABC',href:'https://'+hostname+'/watch/123',hash:'#bwos-play'},chrome,{replaceState(){}},()=>0,()=>0,(type,handler)=>{if(type==='keydown')keys.push(handler);});
+    video.dispatchEvent(new win.Event('playing',{bubbles:true}));
+    const rect=box.getBoundingClientRect();
+    assert(box.classList.contains('bwos-fill') && rect.width===win.innerWidth && rect.height===win.innerHeight,hostname+' player fills its viewport');
+    assert(box.contains(doc.querySelector('#captions')) && box.contains(doc.querySelector('#ad-container')),'Native controls, captions and advertising layers stay with the player');
+    let stopped=false;const event={key:'Enter',preventDefault(){},stopImmediatePropagation(){stopped=true;}};
+    for(const key of keys){key(event);if(stopped)break;}
+    assert(paused,'Controller select toggles the filled provider player');
+    stopped=false;event.key='Escape';for(const key of keys){key(event);if(stopped)break;}
+    assert(!box.classList.contains('bwos-fill'),'Back exits filled playback without removing the player');
+    frame.remove();
+  }
+  document.querySelector('#results').textContent='PASS: YouTube native controls, timeline, menus and Back in both layouts; Netflix/Prime viewport fill with preserved native layers';
+}catch(error){document.querySelector('#results').textContent='FAIL: '+error.message;throw error;}
+</script>

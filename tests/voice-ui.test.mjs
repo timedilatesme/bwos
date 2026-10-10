@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+globalThis.addEventListener = () => {};
+const source = fs.readFileSync(new URL('../ui/js/voice.js', import.meta.url), 'utf8');
+const { matchVoiceNames, normalizeVoiceName, voiceAlias } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+assert.equal(normalizeVoiceName('  Rocket-League!  '), 'rocket league');
+assert.equal(normalizeVoiceName('यूट्यूब'), 'यूट्यूब');
+const entries = [{ name: 'Rocket League' }, { name: 'Rocket League Training' }, { name: 'YouTube' }];
+assert.deepEqual(matchVoiceNames('rocket league', entries), [entries[0]]);
+assert.equal(matchVoiceNames('rocket', entries).length, 2);
+assert.equal(matchVoiceNames('', entries).length, 0);
+assert.equal(matchVoiceNames('ro', entries).length, 0);
+assert.equal(matchVoiceNames('нет', entries).length, 0);
+assert.equal(matchVoiceNames(voiceAlias('you tube'), entries)[0], entries[2]);
+assert.equal(matchVoiceNames(voiceAlias('यू ट्यूब'), entries)[0], entries[2]);
+console.log('PASS: voice title matching and Unicode normalization');

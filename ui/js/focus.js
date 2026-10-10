@@ -28,6 +28,9 @@ export const focus = {
 
 function visible(el) {
   if (!el.isConnected || el.offsetParent === null) return false;
+  const closed=el.closest('details:not([open])');
+  if(closed && !closed.querySelector(':scope > summary')?.contains(el))return false;
+  if (el.disabled || getComputedStyle(el).visibility==='hidden') return false;
   const v = el.closest('.view');
   return !v || v.classList.contains('active');
 }
@@ -70,7 +73,13 @@ function move(dir) {
   }
 
   const row = from.closest('.row');
-  if (row) {
+  const grid=from.closest('.media-video-grid');
+  if(grid) {
+    const target=spatial(from,dir,$$('[data-focus]',grid).filter(visible));
+    if(target){set(target,{dir});return true;}
+    if(dir==='left' || dir==='right'){bump(from,dir);return false;}
+  }
+  if (row && !from.closest('.media-video-grid')) {
     const target = rowMove(from, row, dir);
     if (target === 'edge') { bump(from, dir); return false; }
     if (target) { set(target, { dir }); return true; }
@@ -106,7 +115,13 @@ function rowMove(from, row, dir) {
   const rows = $$('.row', row.parentElement).filter((r) => r.querySelector('[data-focus]'));
   const ri = rows.indexOf(row);
   const next = rows[ri + (dir === 'down' ? 1 : -1)];
-  if (!next) return dir === 'up' ? null /* fall through to spatial → tab bar */ : 'edge';
+  if (!next) {
+    if (dir === 'down') {
+      const player = document.querySelector('#now-playing:not([hidden]) [data-focus]');
+      if (player && scopeFn().contains(player) && visible(player)) return player;
+    }
+    return dir === 'up' ? null /* fall through to spatial → tab bar */ : 'edge';
+  }
   const nextItems = $$('[data-focus]', next).filter(visible);
   const mem = memory.get('row:' + next.dataset.row);
   if (mem && mem.isConnected && nextItems.includes(mem)) return mem;
@@ -143,6 +158,12 @@ function spatial(from, dir, all) {
 }
 
 function ensureVisible(el, instant) {
+  const services=el.closest('.service-switcher');
+  if(services) {
+    const bounds=services.getBoundingClientRect(),target=el.getBoundingClientRect();
+    if(target.left<bounds.left+6 || target.right>bounds.right-6)services.scrollBy({left:target.left<bounds.left+6?target.left-bounds.left-6:target.right-bounds.right+6,behavior:instant?'instant':'smooth'});
+  }
+  if (el.closest('#now-playing,#embedded-player')) { el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: instant ? 'instant' : 'smooth' }); return; }
   // Horizontal shelves: anchor the focused item to the left edge (clamped at the end).
   const track = el.closest('.row-track');
   if (track) {
@@ -191,7 +212,10 @@ function ensureVisible(el, instant) {
   const top = er.top - sr.top;
   const bottom = top + er.height;
   let y = cur;
-  if (top - cur < vh * 0.18 || bottom - cur > vh * 0.78) y = top + er.height / 2 - vh * 0.42;
+  // Recommendation pages keep their header and spotlight in view while a shelf
+  // card is already visible. Re-centering every hover clipped the service heading.
+  const recommendations=scroller.matches('#hub-scroller,#foryou-rows');
+  if (top - cur < vh * (recommendations ? .05 : .18) || bottom - cur > vh * (recommendations ? .9 : .78)) y = top + er.height / 2 - vh * 0.42;
   const max = Math.max(0, scroller.scrollHeight - vh);
   y = Math.min(Math.max(0, y), max);
   if (el.closest('.view-head')) y = 0;

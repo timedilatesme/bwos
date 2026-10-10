@@ -260,6 +260,12 @@ namespace Bwos
         /// <summary>Name shown in the top bar ("" = your Steam profile name).</summary>
         public string UserName { get { lock (gate) return Json.Str(data, "userName", ""); } }
         public string Browser { get { lock (gate) return Json.Str(data, "browser", ""); } }
+        public bool VoiceEnabled { get { lock (gate) return Json.Bool(data, "voiceEnabled", false); } }
+        public string VoiceLanguage { get { lock (gate) return Json.Str(data, "voiceLanguage", "auto"); } }
+        public string VoiceEngine { get { lock (gate) return Json.Str(data, "voiceEngine", "whisper"); } }
+        public bool VoiceReplies { get { lock (gate) return Json.Bool(data, "voiceReplies", true); } }
+        public string VoiceMode { get { lock (gate) return Json.Str(data, "voiceMode", "wake"); } }
+        public int VoiceMicrophone { get { lock (gate) return Json.Int(data, "voiceMicrophone", -1); } }
         public List<string> Hidden { get { lock (gate) return Json.Strings(data, "hidden"); } }
         public List<Dictionary<string, object>> Watch { get { lock (gate) return Json.List(data, "watch"); } }
         public List<Dictionary<string, object>> CustomGames { get { lock (gate) return Json.List(data, "customGames"); } }
@@ -323,6 +329,12 @@ namespace Bwos
   ""standbyAfter"": 0,
   ""openOnWake"": true,
   ""browser"": """",
+  ""voiceEnabled"": false,
+  ""voiceLanguage"": ""auto"",
+  ""voiceEngine"": ""whisper"",
+  ""voiceReplies"": true,
+  ""voiceMode"": ""wake"",
+  ""voiceMicrophone"": -1,
   ""hidden"": [""watch:hotstar"", ""watch:disney"", ""watch:crunchyroll"", ""watch:twitch"", ""watch:zee5"", ""watch:sonyliv"", ""watch:mxplayer"", ""watch:archive"", ""watch:spotify"", ""watch:ytmusic""],
   ""customGames"": [],
   ""artOverrides"": {},

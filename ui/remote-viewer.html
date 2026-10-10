@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BWOS · Stream</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#080b11;color:#eaf1ff;font:15px system-ui,sans-serif;min-height:100svh}video{width:100%;height:100svh;object-fit:contain;display:block;background:#080b11}.glass{background:#1a2435b8;border:1px solid #d9e8ff24;backdrop-filter:blur(24px);border-radius:20px;box-shadow:0 20px 60px #0007}#welcome{position:absolute;inset:0;display:grid;place-items:center;padding:20px}#welcome section{width:min(470px,100%);padding:32px}h1{font-size:30px;margin:0 0 12px}p{line-height:1.6;color:#b8c6dc}button,input{font:inherit;color:inherit;border:1px solid #d9e8ff30;background:#dae8ff12;border-radius:12px;padding:12px 16px}button{cursor:pointer}button:focus-visible,input:focus-visible{outline:2px solid #dae8ff;outline-offset:3px}button:disabled{opacity:.4;cursor:default}.primary{background:#cbe0ff;color:#101a2c;font-weight:600}#toolbar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);width:min(960px,calc(100% - 24px));padding:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}#toolbar[hidden],#welcome[hidden],[hidden]{display:none!important}#status{flex:1;font-size:13px;min-width:120px;color:#b8c6dc}.keys{display:flex;gap:6px}#typing{width:100%;display:flex;gap:8px}#typing input{flex:1;min-width:0}#hint{position:fixed;top:12px;left:50%;transform:translateX(-50%);padding:8px 16px;font-size:13px;pointer-events:none}@media(max-width:600px){button{padding:10px 12px}.keys{width:100%;justify-content:center}#toolbar{bottom:8px}.optional{display:none}}
+</style>
+<video id="screen" autoplay playsinline muted aria-label="Live BWOS screen"></video>
+<div id="welcome"><section class="glass"><h1>Your BWOS, here.</h1><p>Watch the live screen, hear its audio and control BWOS from this device. Keep both devices on the same trusted local network.</p><button id="connect" class="primary">Connect to BWOS</button><p id="message" role="status">Use the sharing link or QR shown on your Windows PC.</p></section></div>
+<div id="hint" class="glass" hidden>Arrows · Enter · Escape, or your controller</div>
+<div id="toolbar" class="glass" hidden>
+  <span id="status" role="status">Connecting…</span><button id="sound">Enable sound</button><button id="fullscreen">Full screen</button><button id="disconnect">Disconnect</button>
+  <div class="keys"><button data-key="home">Home</button><button data-key="back">Back</button><button data-key="left" aria-label="Left">←</button><button data-key="up" aria-label="Up">↑</button><button data-key="ok">Select</button><button data-key="down" aria-label="Down">↓</button><button data-key="right" aria-label="Right">→</button><button data-key="play">⏯</button><button class="optional" data-key="voldown">− Volume</button><button class="optional" data-key="volup">+ Volume</button></div>
+  <form id="typing" autocomplete="off"><input id="text" autocomplete="off" maxlength="300" placeholder="Type in the selected BWOS search field" aria-label="Remote text"><button>Send</button></form>
+</div>
+<script type="module" src="/viewer.js"></script>
+</html>

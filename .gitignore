@@ -5,6 +5,9 @@
 /data/
 *.log
 
+# Chromium-generated extension rule cache
+/extensions/bwos-tv/_metadata/
+
 # Editor / OS
 .vs/
 .vscode/

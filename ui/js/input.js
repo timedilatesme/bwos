@@ -134,9 +134,9 @@ window.addEventListener('gamepaddisconnected', () => {
 // "desktop configuration" may generate for the same button press.
 const KEYS = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
-  Enter: 'accept', ' ': 'accept', Escape: 'back', Backspace: 'back',
+  Enter: 'accept', ' ': 'playPause', Escape: 'back', Backspace: 'back',
   q: 'prevTab', e: 'nextTab', PageUp: 'prevTab', PageDown: 'nextTab',
-  o: 'options', ContextMenu: 'options', x: 'secondary', m: 'menu', Home: 'home'
+  o: 'options', ContextMenu: 'options', x: 'secondary', p: 'playPause', m: 'menu', Home: 'home'
 };
 window.addEventListener('keydown', (e) => {
   // In a text box, keys type; only Enter, Escape and up/down still navigate.

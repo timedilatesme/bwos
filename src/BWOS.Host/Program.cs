@@ -98,10 +98,14 @@ namespace Bwos
         private readonly Control uiThread = new Control(); // marshals calls from worker threads
         private readonly PowerModeChangedEventHandler powerChanged;
         private readonly SessionSwitchEventHandler sessionSwitched;
+        private readonly PlaybackWindow playback;
+        private readonly AssistantWindow assistant;
 
         public TrayContext(App app)
         {
             this.app = app;
+            playback = new PlaybackWindow(app);
+            assistant = new AssistantWindow(app.Voice);
             uiThread.CreateControl();
             IntPtr force = uiThread.Handle; // make sure the handle exists on this (UI) thread
             app.RequestExit = delegate { uiThread.BeginInvoke(new Action(ExitThread)); };
@@ -162,6 +166,8 @@ namespace Bwos
                 icon.Dispose();
                 hid.Dispose();
                 uiThread.Dispose();
+                playback.Dispose();
+                assistant.Dispose();
             }
             base.Dispose(disposing);
         }

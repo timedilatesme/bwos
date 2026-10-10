@@ -20,6 +20,43 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
 
 ## Features
 
+**BWOS browsing and playback (1.8.0)**
+- **Stream BWOS to a Mac, phone or browser:** Settings → Connections → Stream BWOS. Choose an entire screen and enable Share system audio, then open its temporary link or scan the QR on your other device. The browser receives screen and audio through WebRTC and provides arrows, Select, Back, Home, playback, volume and text entry. Select Enable sound on the viewer. This is free and needs no API key. Windows may ask you to allow BWOS through the firewall on private networks. Use a trusted local network; protected streaming video may be black. Stop sharing revokes the session. Links pair one viewer, expire after ten minutes and are separate from saved phone pairings.
+- Provider logos fill their For You filter tiles. Selecting search opens a controller-friendly keyboard; physical/phone typing also works, including Hindi text.
+- Sparse YouTube Home collection also tries rendered cards from YouTube TV in the same muted discovery tab. Apps still opens original YouTube TV directly. Feeds remain bounded snapshots of what the service renders.
+- Wake listening decodes continuous sound in four-second chunks, keeping overlap across boundaries. Dictation receives service-name spelling hints and supports explicit common wake transcriptions. Settings shows missed-wake transcripts. Music and microphone quality can still affect recognition.
+- For You uses compact app-logo filters with accessible names. Discovery recognizes Netflix browse/title identifiers and modern YouTube titles, pages lazy and horizontal shelves, and preserves fuller feeds when a refresh is incomplete.
+- Cleaner recommendation pages: one service strip, compact source information, secondary actions in **More**, readable titles on every card, and no identical repeated shelves. A title with one provider launches directly; multiple providers still offer a choice.
+- Settings uses expandable categories, with controller and numbered voice navigation kept inside visible controls.
+- Imported Netflix/Prime artwork uses its actual artwork/backdrop fields. Image loading tries known alternatives; YouTube derives a thumbnail when one is missing. Discovery imports include lazy-loaded and CSS-background images, and retain CDN delivery/resize queries.
+- **For You** and service pages share a TV recommendation layout, with a cinematic spotlight, Continue Watching, recommendation shelves and a service switcher. YouTube uses wide video cards, Netflix combines posters with its imported landscape cards, and Prime uses cinematic landscape shelves.
+- **Sync from YouTube / Netflix / Prime Video** imports rendered recommendation shelves through the existing BWOS browser session. A temporary muted tab reads the discovery page and closes afterward; existing playback tabs stay untouched. This is a best-effort DOM adapter, not a guaranteed account API or exact replica.
+- **Apps** opens each service directly. Recommendations, saved videos and service filters live together in **For You**.
+- Search in **For You** reads rendered YouTube, Netflix and Prime Video search results into BWOS. Enter and the Search button both submit; All services searches the supported visible services. Results are temporary and never replace Home recommendations. No API key is required. Sign-in/profile selection may be needed in the original app.
+- YouTube recommendations use a navigable video grid. Discovery reads multiple lazy-loaded batches from a muted temporary tab, preserving virtualized cards, with **Load more recommendations** and a bounded 360-card snapshot. It does not expose an unlimited provider API feed. Short Prime collections combine into useful rows rather than one card per row.
+- Shared glass styling uses translucent chrome, restrained edge highlights and readable dark surfaces. Blur is limited to a few surfaces rather than hundreds of video cards.
+- Opening a recommendation or saved YouTube video fills the entire window, with YouTube's own controls over the video and no separate BWOS bar. A/Cross or X/Square toggles playback; left/right skips 10 seconds. Up enters the native timeline, Down reaches native buttons, and Menu/Y opens native settings. D-pad navigates and A/Cross selects; Back closes menus, then leaves controls, then docks playback. Bumpers move through the current shelf.
+- The phone remote has direct Play/Pause and ±10-second controls, routed to playback rather than UI focus.
+- YouTube shelves become native playlists. The player advances to the next video automatically, exposes native Previous/Next controls, and keeps one iframe while BWOS updates the title and progress. The floating player shows **Up next** and available queue controls. Options on a video also offers **Open in YouTube TV**.
+- Press Home while an embedded video plays to dock the same visible player. **X / Square** enters its controls; D-pad chooses Play/Pause, Expand, Watch on YouTube or Close. Back leaves the controls. Hidden or covered embedded playback pauses.
+- Netflix/Prime and other film catalogues use BWOS's existing availability cache. Filter titles and genres, choose Movies/Series, then select a provider to watch. Subscriptions, sign-in and protected playback remain on the provider's site.
+- Videos that refuse embedding have an explicit **Open YouTube TV** fallback. The direct TV adapter remains a compatibility workaround, so provider availability is not guaranteed.
+
+**Voice, background playback and devices**
+- Free local Whisper recognition for English/Hindi, automatic NVIDIA acceleration and a smaller CPU fallback. Enabling **Settings → Voice → Voice control** installs the required files once; no accounts or API keys.
+- Local Windows echo cancellation and noise suppression reduce speaker audio entering the microphone; Settings reports whether processing is active or basic capture is being used.
+- A transient Windows assistant appears over other apps for accepted commands, responds to microphone activity and speaks acknowledgements with installed Windows voices.
+- **Hey console** is the default wake phrase for new installs. Say it with a command, or give follow-up commands for 12 seconds. Direct listening remains optional.
+- “Open YouTube”, “Launch [game]”, “Show numbers”, “Select three”, and “Search YouTube for …”. Inside YouTube, “Search for …” uses its TV search route and keeps the TV interface.
+- “Browse YouTube” opens the BWOS library; “Open YouTube app” opens the service directly. Plain “Search for …” filters the BWOS catalogue/library while on BWOS screens.
+- Return Home in the same fullscreen window while a media tab stays alive in the background. A compact **Now Playing** cloud shows an animation, elapsed time and progress, with pause/play, reopen and stop. A draggable, collapsible desktop companion appears when another app is in front. Supports HTML media in BWOS streaming apps; some providers pause hidden players.
+- Home stays loaded, and reopening a service reuses its tab. Press **X / Square** to focus floating controls, D-pad to navigate, **A / Cross** to select, and **B / Circle** to return. A top-bar **Now playing** entry is also available.
+- Voice supports precise volume, mute/unmute, seeking, restart, stop/reopen, player controls, keyboard and explicit page retry. Next/previous and subtitles depend on the provider exposing controls.
+- YouTube retains its TV interface; intrusive response rewriting and ad seeking have been removed for stability. Ads may play.
+- YouTube TV uses a compatibility identity only for TV documents. Playback requests keep native browser headers; failed players expose **Retry**, with bounded local error-code diagnostics. This browser adapter needs maintenance as YouTube changes; it is not a certified native TV app.
+- A **Devices** screen for controllers, paired Bluetooth devices, and driver-supported speaker/headphone connect/disconnect controls.
+- See [voice commands, setup and device limitations](docs/VOICE_AND_DEVICES.md).
+
 **Games**
 - **Home button → BWOS, anywhere.** A small tray service watches your controllers in the background:
   - Xbox and XInput pads through the Guide-button API.
@@ -33,20 +70,19 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
   starts, and comes back when a game it launched closes.
 
 **Watching**
-- **Apps inside BWOS.** Netflix, Prime Video, YouTube, Einthusan, Tubi, Pluto TV and Plex open *inside* the BWOS
-  window, in one persistent browser profile, so you sign in to each service once.
+- **Browse in BWOS, open services when needed.** Service tiles open BWOS browsing first. Their **Open app** option opens Netflix, Prime Video, YouTube, Einthusan, Tubi, Pluto TV or Plex in the same persistent browser profile.
 - **A controller layer for every site.** The bundled `bwos-tv` extension adds:
   - A TV focus ring you move with the D-pad, including onto posters built as plain clickable `<div>`s.
   - A = select, B = back.
   - Automatic full screen for in-page players.
   - Blocking of pop-up and new-tab ads.
-- **One press to play.** Picking a title in For You opens it on the right service and presses its Play button.
+- **Choose where to watch.** Picking a film or series shows its details and available providers before opening the selected service.
 - **For You.** Series and films from *your* services (catalogue data from JustWatch, plus Einthusan's own
   lists). It starts with a few clean rows and grows as you watch:
   - **Up Next** follows each show across services, with progress bars, and resumes where you stopped.
   - **"Because you watched …"** rows appear on their own.
   - Reality TV is filtered out.
-- **YouTube TV.** YouTube opens in its 10-foot TV interface with ad schedules and promotions stripped out.
+- **YouTube TV.** YouTube opens in its 10-foot TV interface, with its normal player and ad handling.
 - **Your phone as a remote.** Scan the QR code once (**Settings → Phone remote**, or **Menu** in any app) and
   your phone becomes an Apple TV-style remote: swipe on the touch surface to move, tap to select, with Back,
   Home, Play/Pause and volume, plus a keyboard tab for sign-ins and searches. The phone stays paired; add the
@@ -76,8 +112,7 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
 - **Open on wake.** When the PC wakes from sleep (or you sign in right after), BWOS comes straight up.
 
 **No dependencies to build.** BWOS compiles with the C# compiler that ships inside Windows (.NET Framework 4.8),
-so you don't need an SDK, Node or Visual Studio. The interface runs in Microsoft Edge's app mode, which every
-Windows 10/11 PC has.
+so you don't need an SDK, Node or Visual Studio. The interface runs in a managed fullscreen Microsoft Edge window on Windows 10/11.
 
 ## Install
 
@@ -189,7 +224,7 @@ icons), `profiles\shell\` (the BWOS browser profile with your sign-ins), `bwos.l
 ## How it works
 
 ```
- controller ─► BWOS.exe (tray, C#) ─────────────────► Edge --app, fullscreen ◄─ the BWOS UI (ui/)
+ controller ─► BWOS.exe (tray, C#) ─────────────────► Edge window, fullscreen ◄─ the BWOS UI (ui/)
                • home button: XInput Guide + HID       ▲   HTTP + SSE on 127.0.0.1 (token)
                • game libraries, launcher, now playing │
                • For You catalogue + watch tracker ────┘   same window navigates to Netflix, Prime, YouTube TV…
@@ -201,9 +236,10 @@ icons), `profiles\shell\` (the BWOS browser profile with your sign-ins), `bwos.l
 |---|---|
 | `src/BWOS.Host/` | Tray host. `Gamepad.cs` / `HidWatcher.cs` (home button), `Library.cs` + `Vdf.cs` (game discovery), `GameManager.cs`, `ShellManager.cs` (window & focus), `InputBridge.cs`, `Catalog.cs` (For You), `Tracker.cs` (Up Next), `WatchArt.cs` (app icons), `PhoneRemote.cs` (phone remote & keyboard), `CastReceiver.cs` (YouTube casting), `AirPlayReceiver.cs` (runs UxPlay), `WebServer.cs` + `App.cs` (API) |
 | `ui/` | The 10-foot interface: plain HTML/CSS/ES modules, no build step (`focus.js` spatial navigation, `input.js` controllers, `sound.js` UI sounds + ambient music) |
-| `extensions/bwos-tv/` | Loaded into the BWOS window: `remote.js` (controller layer), `youtube.js` (TV UA + ad removal), `popups.js` (ad pop-up guard), `qr.js`, `background.js`, `rules.json` |
+| `extensions/bwos-tv/` | Loaded into the BWOS window: `remote.js` (controller layer), `youtube.js` (TV UA), `popups.js` (ad pop-up guard), `qr.js`, `background.js`, `rules.json` |
 | `tools/` | `install.ps1`, `setup-airplay.ps1` (AirPlay add-on), `make-icon.ps1` (renders `tools/icon/icon.html`, the icon source, with headless Edge) |
 | `docs/RESEARCH.md` | Research notes and design decisions |
+| `docs/VOICE_AND_DEVICES.md` | Voice commands, language/microphone settings, and Bluetooth control behavior |
 
 ## Privacy & security
 

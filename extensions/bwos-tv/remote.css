@@ -95,3 +95,7 @@ html.bwos-filled, html.bwos-filled body { overflow: hidden !important; }
 .bwos-kbd-text b { font-size: 21px; font-weight: 700; }
 .bwos-kbd-text em { font-style: normal; font-weight: 800; color: #6cc24a; }
 .bwos-kbd-text small { color: rgba(244, 245, 248, 0.6); font-size: 13px; }
+/* Voice indicators are independent of the site's navigation and never capture pointer input. */
+#bwos-voice-status { position: fixed; top: 18px; right: 22px; z-index: 2147483646; padding: 10px 18px; border-radius: 24px; background: rgba(15,18,28,.9); color: #fff; font: 600 16px "Segoe UI",sans-serif; pointer-events: none; box-shadow: 0 3px 16px #0006; }
+#bwos-voice-status.listening { border: 1px solid #7ce2b1; color: #a2f3cf; }
+.bwos-voice-number { position: fixed; z-index: 2147483647; background: #a2f3cf; color: #10201b; border: 2px solid #fff; border-radius: 8px; padding: 3px 8px; font: 700 18px "Segoe UI",sans-serif; pointer-events: none; box-shadow: 0 2px 10px #0008; }

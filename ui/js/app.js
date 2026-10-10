@@ -3,6 +3,17 @@ import { api, listen, standalone } from './api.js';
 import { input } from './input.js';
 import { focus } from './focus.js';
 import { sound } from './sound.js';
+import { updateAssistant } from './assistant.js';
+import { setVoiceScope, showVoiceNumbers, hideVoiceNumbers, refreshVoiceNumbers, voiceNumber, matchVoiceNames, voiceAlias } from './voice.js';
+import { renderPlayback, focusPlayback, leavePlayback, playbackScope } from './playback.js';
+import { openServiceTab, syncServiceRecommendations, searchServiceRecommendations } from './service-tabs.js';
+import { hubCatalogue, hubVideos, youtubeId } from './media-hub.js';
+import { YouTubePlayer } from './youtube-player.js';
+import {serviceSwitcher, recommendationContents} from './recommendations.js';
+import {artworkImage} from './artwork.js';
+import {settingsSections} from './settings-sections.js';
+import {searchKeyboard} from './onscreen-keyboard.js';
+import {ScreenSharing} from './screen-stream.js';
 
 // ------------------------------------------------------------------ state
 
@@ -12,8 +23,20 @@ let gamesFilter = 'all';
 let gamesSort = 'recent';
 let modalOpen = null;          // { restore: element }
 let launching = null;          // { key, timer }
-const TABS = ['home', 'foryou', 'games', 'watch', 'settings'];
-const HERO_VIEWS = ['home', 'foryou'];
+let hubId = 'all', hubQuery = '', hubType = 'all', youtubePlayer, claimingLocal = false;
+let discoverySearch=null, discoverySearching=false, searchGeneration=0, discoveryFilterTimer=0;
+const recommendationSyncAttempts=new Map();
+const recommendationSyncing=new Set();
+const recommendationSyncStatus=new Map();
+let discoveryPrefetched=false;
+const openSettingsSections=new Set();
+const screenSharing=new ScreenSharing(state=>{
+  const button=$('#sharing-status');if(button){button.hidden=!state.active;button.textContent=state.state==='connected'?'Sharing · connected':'Sharing';}
+  if(state.error)toast(state.error,'alert',true);
+});
+addEventListener('pagehide',()=>{screenSharing.stop();});
+const TABS = ['home', 'foryou', 'games', 'watch', 'devices', 'settings'];
+const HERO_VIEWS = ['home'];
 
 const gameByKey = (k) => S.games.find((g) => g.key === k);
 const watchById = (id) => S.watch.find((w) => w.id === id);
@@ -22,8 +45,20 @@ const visibleGames = () => S.games.filter((g) => !g.hidden);
 // ------------------------------------------------------------------ boot
 
 async function boot() {
+  youtubePlayer = new YouTubePlayer($('#embedded-player'), {
+    openApp: url => openInside({url,title:'YouTube',sub:'Opening YouTube…',brand:'#ff0033',returnKey:'watch:youtube'}),
+    changed: () => {
+      if(youtubePlayer?.video)$('#playback-status').hidden=false;
+      else {
+        $('#playback-status').hidden=!(S.playback || []).some(player=>!player.local);
+        if(focus.current?.closest('#embedded-player'))focus.set($(`#view-${view} [data-focus]`) || $('#tabs .tab.active'));
+      }
+    }
+  });
   const intro = startIntro();
-  focus.setScope(() => (modalOpen ? $('#modal') : document.body));
+  const scope = () => modalOpen ? $('#modal') : playbackScope();
+  focus.setScope(scope);
+  setVoiceScope(scope);
   focus.onChange(onFocusChange);
   input.on(onAction);
   document.addEventListener('focus-edge', () => sound.edge());
@@ -32,6 +67,17 @@ async function boot() {
     t.addEventListener('click', () => switchTab(t.dataset.tab));
   });
   document.addEventListener('click', onClick);
+  document.addEventListener('focusin',event=>{
+    const el=event.target.closest?.('[data-focus]');
+    if(el && el!==focus.current)focus.set(el,{silent:true});
+  });
+  addEventListener('message', event => {
+    if (event.source === window && event.origin === location.origin && event.data?.type === 'bwos-shell-home') { goHome(); reload(); }
+    if(event.source===window && event.origin===location.origin && event.data?.type==='bwos-player-key' && youtubePlayer?.video) {
+      const action={ArrowLeft:'left',ArrowRight:'right',ArrowUp:'up',ArrowDown:'down',Enter:'accept',Escape:'back',' ':'playPause',x:'secondary',p:'playPause',f:'options',o:'options',m:'menu',ContextMenu:'options',F23:'menu'}[event.data.key];
+      if(action)onAction(action,'remote');
+    }
+  });
   // The pointer may be resting anywhere when BWOS opens: ignore hover until the mouse really moves.
   document.body.classList.add('hide-cursor');
   document.addEventListener('mouseover', (e) => {
@@ -50,8 +96,9 @@ async function boot() {
   restorePlace();
   intro.done();
   // Coming back from a streaming service via the back/forward cache: tidy up.
-  addEventListener('pageshow', (e) => { if (e.persisted) { hideLaunch(); restorePlace(); reload(); claimCast(); } });
+  addEventListener('pageshow', (e) => { if (e.persisted) { hideLaunch(); restorePlace(); reload(); claimCast(); claimVoice(); } });
   claimCast();
+  claimVoice();
 
   listen({
     running: async (d) => {
@@ -72,7 +119,18 @@ async function boot() {
       toast('Phone connected. Swipe to move, tap to select.', 'check');
       reload();
     },
-    focus: () => { exitRest(); exitAmbient(); reload(); sound.tab(); }
+    focus: () => { exitRest(); exitAmbient(); reload(); sound.tab(); },
+    voice: async () => {
+      try {
+        const before = JSON.stringify([S.voice?.available, S.voice?.installing, S.voice?.installMessage, S.voice?.installError]);
+        S.voice = await api.voiceState(); renderVoiceStatus();
+        const after = JSON.stringify([S.voice?.available, S.voice?.installing, S.voice?.installMessage, S.voice?.installError]);
+        if (before !== after && view === 'settings' && !modalOpen) renderAll();
+        await claimVoice();
+      } catch {}
+    },
+    devices: () => reloadSoon(),
+    playback: async () => { try { S.playback = await api.playback(); renderPlayback(S.playback); if(youtubePlayer?.video) $('#playback-status').hidden=false; ambientSync();await claimLocalPlayback(); } catch {} }
   });
 
   addEventListener('focus', ambientSync);
@@ -85,6 +143,15 @@ async function boot() {
 
   // Keep "now playing" etc. fresh even if an event was missed.
   setInterval(() => { if (!document.hidden) reload(); }, 30000);
+  setInterval(() => { if (!document.hidden && document.hasFocus()) claimVoice(); }, 1000);
+  setInterval(claimLocalPlayback,700);
+}
+
+async function claimLocalPlayback() {
+  if(standalone || claimingLocal)return;
+  claimingLocal=true;
+  try{const batch=await api.localPlaybackClaim();for(const command of batch.commands || [])await youtubePlayer.control(command.action,command.value).catch(error=>toast(error.message,'alert'));}
+  catch{}finally{claimingLocal=false;}
 }
 
 /**
@@ -177,7 +244,13 @@ function renderAll() {
   renderForYou();
   renderGames();
   renderWatch();
+  if(view === 'hub') renderHub();
+  renderDevices();
   renderSettings();
+  renderVoiceStatus();
+  renderPlayback(S.playback);
+  if(youtubePlayer?.video) $('#playback-status').hidden=false;
+  ambientSync();
 
   if (cur && !cur.isConnected) {
     let target = null;
@@ -192,6 +265,127 @@ function renderAll() {
   } else if (cur) {
     focus.ensureVisible(cur, true);
   }
+  refreshVoiceNumbers();
+  maybeRefreshRecommendations();
+}
+
+function renderVoiceStatus() {
+  const el = $('#voice-status'), v = S.voice || {};
+  updateAssistant(v, false); // The host's transient overlay also covers streaming and desktop apps.
+  el.replaceChildren(icon('mic'));
+  el.classList.toggle('listening', !!v.listening);
+  el.classList.toggle('off', !S.settings.voiceEnabled);
+  el.title = v.message || 'Voice control';
+  el.setAttribute('aria-label', `Voice control: ${el.title}`);
+  const feedback = $('#voice-feedback');
+  feedback.hidden = !S.settings.voiceEnabled;
+  feedback.textContent = v.speaking ? v.reply : v.thinking ? 'Understanding your request…' : v.listening ? (v.feedback || v.transcript || (S.settings.voiceLanguage === 'hi' ? 'सुन रहा हूँ…' : 'Listening…')) : v.message || '';
+  const meter = $('#voice-input-meter');
+  if (meter) meter.value = v.inputLevel || 0;
+  const signal = $('#voice-input-signal');
+  if (signal) signal.textContent = v.capturing ? [v.signalMessage || 'Speak to test the microphone', v.inputProcessing].filter(Boolean).join(' · ') : v.message || 'Voice control is off';
+  const heard = $('#voice-input-heard');
+  if (heard) heard.textContent = v.feedback || 'Say “Open YouTube”, then pause for two seconds.';
+}
+
+function renderDevices() {
+  const devices = S.devices || {}, pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean);
+  const audio = devices.audio || [], bluetooth = devices.bluetooth || [];
+  const groups = [h('div.view-head', null, h('h2', null, 'Devices')),
+    h('div.devices-toolbar', null,
+      setting({ key: 'deviceRefresh', title: 'Refresh devices', ico: 'refresh' }),
+      setting({ key: 'bluetoothSettings', title: 'Pair or manage Bluetooth devices', desc: 'Opens Windows Bluetooth settings.', ico: 'bluetooth' })),
+    h('div.settings-group', null, h('h3', null, 'Controllers'),
+      ...pads.map(p => h('div.device-card', null, icon('gamepad', 'ico'), h('div.s-text', null, h('div.s-title', null, p.id), h('div.s-desc', null, 'Connected · ' + (p.mapping || 'Generic controller'))))),
+      !pads.length ? h('div.device-card', null, (S.controllers || []).length ? `${S.controllers.length} XInput controller(s) connected` : 'No controller connected') : null),
+    h('div.settings-group', null, h('h3', null, 'Bluetooth speakers & headphones'),
+      ...audio.map(d => h('button.setting', { 'data-focus': true, dataset: { kind: 'device', key: 'device:' + d.id, id: d.id } },
+        icon('sound', 'ico'), h('div.s-text', null, h('div.s-title', null, d.name), h('div.s-desc', null, d.connected ? 'Audio connected' : 'Audio disconnected')),
+        h('div.s-value', null, d.canControl ? (d.connected ? 'Disconnect' : 'Connect') : 'Manage in Windows'))),
+      !audio.length ? h('div.device-card', null, 'No Bluetooth audio endpoints found. Pair a speaker in Windows first.') : null),
+    h('div.settings-group', null, h('h3', null, 'Bluetooth devices'),
+      ...bluetooth.map(d => h('div.device-card', null, icon('bluetooth', 'ico'), h('div.s-text', null, h('div.s-title', null, d.name), h('div.s-desc', null, `${d.type} · ${d.status}`)))),
+      !bluetooth.length ? h('div.device-card', null, 'No paired Bluetooth devices found.') : null),
+    devices.error ? h('div.info-card', null, devices.error) : null];
+  $('#devices-scroller').replaceChildren(...groups.filter(Boolean));
+}
+
+let claimingVoice = false;
+async function claimVoice() {
+  if (standalone || claimingVoice || document.hidden || !document.hasFocus()) return;
+  claimingVoice = true;
+  try { const r = await api.voiceClaim(); for (const command of r.commands || []) await handleVoice(command); }
+  catch (err) { api.log('Voice command failed: ' + err.message); }
+  finally { claimingVoice = false; }
+}
+
+async function handleVoice(command) {
+  exitRest(); exitAmbient();
+  const { action, value } = command;
+  if (action === 'numbers') return showVoiceNumbers();
+  if (action === 'hideNumbers') return hideVoiceNumbers();
+  if (action === 'selectNumber') {
+    const el = voiceNumber(value);
+    if (!el) return toast('Say “Show numbers” to see the available choices.', 'mic');
+    hideVoiceNumbers(); focus.set(el); await activate(el);
+    if (modalOpen) showVoiceNumbers();
+    return;
+  }
+  if (action === 'help') return openVoiceHelp();
+  if (action === 'playerControls') {
+    if(youtubePlayer?.video && !youtubePlayer.docked && !youtubePlayer.error) {
+      try{return await youtubePlayer.handleInput('down');}catch(error){return toast(error.message,'mic');}
+    }
+    return focusPlayback() || toast('Start media first.', 'mic');
+  }
+  if (action === 'browseService') return browseByName(value);
+  if (action === 'openServiceApp') return browseByName(value, true);
+  if (action === 'search') { if(view!=='foryou'){hubId='all';hubType='all';switchTab('foryou');} hubQuery=value; renderHub(); return runDiscoverySearch(); }
+  if (action === 'keyboard') return view==='foryou'?openSearchKeyboard():showQr(await api.keyboard());
+  if (action === 'reloadPage') return reload();
+  if (action === 'youtubeSearch') { api.voiceReply('Searching YouTube for ' + value.slice(0, 150) + '.').catch(() => {}); openWatch('youtube');hubQuery=value;return runDiscoverySearch(); }
+  if (action === 'open') {
+    const name = voiceAlias(value);
+    const tabs = { home: 'home', games: 'games', apps: 'watch', movies: 'foryou', 'for you': 'foryou', settings: 'settings', devices: 'devices', bluetooth: 'devices' };
+    hideVoiceNumbers(); closeModal();
+    if (tabs[name]) { switchTab(tabs[name], { focusContent: true }); api.voiceReply('Opened ' + name + '.').catch(() => {}); return; }
+    if (name === 'controllers' || name === 'controller') return openControls();
+    const entries = [
+      ...S.watch.filter(w => !w.hidden).map(w => ({ name: w.name, run: () => openServiceApp(w.id) })),
+      ...visibleGames().map(g => ({ name: g.name, run: () => playGame(g.key) }))
+    ];
+    const matches = matchVoiceNames(name, entries);
+    if (matches.length === 1) { await api.voiceReply('Opening ' + matches[0].name + '.').catch(() => {}); return matches[0].run(); }
+    if (matches.length > 1) {
+      confirm('Which one?', `Several titles match “${value}”. Say “Select” and a number.`, [...matches.slice(0, 8).map((m, i) => ['choice' + i, m.name, 'play', m.run]), ['cancel', 'Cancel']]);
+      return showVoiceNumbers();
+    }
+    api.voiceReply('I could not find that app. Try saying open games, or show numbers.').catch(() => {});
+    return toast(`Couldn’t find “${value}”. Try “Open games” or “Show numbers”.`, 'mic');
+  }
+  if (action === 'resume' && S.running) return api.resumeGame();
+  if (action === 'pause' || action === 'resume') {
+    const player = (S.playback || []).find(p => p.background);
+    if (player) return api.playbackControl(player.id, action);
+    return toast('Start media in a streaming app first.', 'mic');
+  }
+  hideVoiceNumbers(); onAction(action, 'voice');
+}
+
+function openVoiceHelp() {
+  hideVoiceNumbers();
+  const v = S.voice || {}, st = S.settings || {};
+  const examples = st.voiceLanguage === 'hi'
+    ? ['यूट्यूब खोलो', 'ऊपर · नीचे · वापस · चुनो', 'यूट्यूब पर संगीत खोजो', 'आवाज कम करो', 'नंबर दिखाओ · नंबर तीन चुनो']
+    : ['Hey console, browse YouTube · Browse Netflix', 'Open YouTube app · Open games · Open devices', 'Launch [game name]', 'Up · Down · Left · Right · Select · Back · Go home', 'Search for [title] · Search YouTube for [anything]', 'Pause · Resume · Stop music · Show player controls', 'Skip forward twenty seconds · Rewind ten seconds · Restart song', 'Volume up · Louder · Set volume to fifty percent · Mute · Unmute', 'Show numbers · Select three · Show keyboard · Reload page'];
+  const panel = h('div.modal-panel', null, h('h2.modal-title', null, 'Voice control'),
+    h('p.modal-text', null, st.voiceMode === 'wake' ? 'Say “Hey console” (हेलो कंसोल), pause, then your command. Follow-up commands work for 12 seconds.' : st.voiceMode === 'everywhere' ? 'Say commands directly from BWOS, streaming apps or the desktop. Say “Hey console” to show it, or “Stop listening” to pause. Only supported BWOS commands are acted on.' : 'Say a command while BWOS is on screen. No wake phrase needed. Say “Stop listening” to pause; “Hey console” resumes.'),
+    h('div.info-card', null, v.message || 'Enable voice in Settings.', h('ul', null, ...examples.map(text => h('li', null, text)))),
+    h('p.modal-text', null, 'Recognition runs offline. Choose English or Hindi in Settings. Mixed-language accuracy varies.'),
+    h('div.modal-actions', null,
+      h('button.btn', { 'data-focus': true, dataset: { action: 'settings' } }, 'Voice settings'),
+      h('button.btn', { 'data-focus': true, dataset: { action: 'close' } }, 'Close')));
+  showPanel(panel, { settings: () => switchTab('settings', { focusContent: true }), close: () => {} }, panel.querySelector('[data-focus]'));
 }
 
 function renderStatus() {
@@ -276,6 +470,7 @@ function gameCard(g, shape, row) {
 
 function watchTile(w) {
   const t = h('div.tile.tile--service', {
+    role:'button', 'aria-label':w.name,
     'data-focus': true,
     dataset: { kind: 'watch', key: 'watch:' + w.id, id: w.id },
     style: { '--brand': w.color || '#555' }
@@ -296,21 +491,20 @@ function watchTile(w) {
 }
 
 /** Poster card for a movie/series from the recommendations. */
-function titleCard(t) {
+function titleCard(t, landscape=false) {
   const card = h('div.card.card--portrait.card--title', {
+    role:'button', 'aria-label':t.title,
     'data-focus': true,
     dataset: { kind: 'title', key: 'title:' + t.id, id: t.id },
     style: { '--h': String(hashHue(t.title)) }
   });
   const art = h('div.card-art', { 'data-title': t.title });
   card.append(art);
-  if (t.poster) {
-    const img = artImg(t.poster);
-    img.onerror = () => { card.classList.add('noart'); img.remove(); };
-    art.append(img);
-  } else card.classList.add('noart');
+  const img=artworkImage(t,{landscape,missing:()=>card.classList.add('noart')});
+  if(img)art.append(img);
+  card.append(h('div.card-label',null,t.title));
   const apps = t.offers.map((o) => watchById(o.app)).filter(Boolean);
-  if (apps.length) card.append(h('div.card-apps', null, apps.slice(0, 3).map((a) => h('img', { src: a.iconUrl, alt: a.name }))));
+  if (apps.length) card.append(h('div.card-apps', null, apps.slice(0, 3).map((a) => a.iconUrl?h('img', { src: a.iconUrl, alt: a.name }):h('span',null,a.name))));
   if (t.offers.length && t.offers.every((o) => o.free)) card.append(h('div.badge', null, 'Free'));
   return card;
 }
@@ -318,19 +512,16 @@ function titleCard(t) {
 /** Landscape card for something you're part-way through, with a progress bar. */
 function resumeCard(e) {
   const card = h('div.card.card--land.card--resume', {
+    role:'button', 'aria-label':'Resume '+e.title,
     'data-focus': true,
     dataset: { kind: 'resume', key: 'resume:' + e.id, id: e.id },
     style: { '--h': String(hashHue(e.title)) }
   });
   const art = h('div.card-art', { 'data-title': e.title });
   card.append(art);
-  const src = e.backdrop || e.artwork || e.poster;
-  if (src) {
-    const img = artImg(src);
-    img.onerror = () => { card.classList.add('noart'); img.remove(); };
-    art.append(img);
-  } else card.classList.add('noart');
-  if (src) card.append(h('div.card-label', null, e.title, e.subtitle ? h('small', null, e.subtitle) : null));
+  const img=artworkImage(e,{landscape:true,missing:()=>card.classList.add('noart')});
+  if(img)art.append(img);
+  card.append(h('div.card-label', null, e.title, e.subtitle ? h('small', null, e.subtitle) : null));
   const app = e.app && watchById(e.app);
   if (app) card.append(h('img.card-appicon', { src: app.iconUrl, alt: app.name }));
   const pct = e.duration ? Math.min(100, Math.round((e.position / e.duration) * 100)) : 0;
@@ -338,17 +529,18 @@ function resumeCard(e) {
   return card;
 }
 
-function renderForYou() {
-  const rows = $('#foryou-rows');
-  const parts = [row('upnext', 'Up Next', (S.upNext || []).map(resumeCard))];
-  for (const r of S.forYou || []) parts.push(row('fy-' + r.id, r.title, r.items.map(titleCard)));
-  const built = parts.filter(Boolean);
-  if (!built.length) {
-    rows.replaceChildren(h('div.empty', null,
-      'Picking a few things for you… Recommendations appear here in a moment, and grow as you watch.'));
-    return;
+function recommendationTitle(t, service) {
+  const landscape=['prime','pluto','tubi'].includes(service) || String(t.id).startsWith('feed:') || (!t.poster && !!(t.backdrop || t.artwork));
+  const card=titleCard(t,landscape);
+  card.classList.add('recommendation-title');
+  if(landscape) {
+    card.classList.remove('card--portrait'); card.classList.add('card--land');
   }
-  rows.replaceChildren(...built);
+  return card;
+}
+const recommendationFactories={title:recommendationTitle,resume:resumeCard,row};
+function renderForYou() {
+  renderHub();
 }
 
 function actionTile(action, label, ico, sub) {
@@ -382,6 +574,7 @@ function renderHome() {
 
   const watch = S.watch.filter((w) => !w.hidden);
   const actions = [
+    actionTile('devices', 'Devices', 'bluetooth'),
     actionTile('settings', 'Settings', 'settings'),
     S.settings.steamFound ? actionTile('bigpicture', 'Big Picture', 'bigpicture', 'Steam') : null,
     actionTile('desktop', 'Desktop', 'desktop'),
@@ -393,7 +586,7 @@ function renderHome() {
   rows.replaceChildren(...[
     row('continue', running ? 'Now playing' : 'Jump back in', cont),
     row('upnext', 'Up Next', (S.upNext || []).slice(0, 10).map(resumeCard)),
-    row('watch', 'Watch', watch.filter((w) => w.section === 'stream').map((w) => watchTile(w))),
+    row('watch', 'Apps', watch.filter((w) => w.section === 'stream').map((w) => watchTile(w))),
     row('library', 'Your games', byName.map((g) => gameCard(g, 'portrait', 'library')), `${games.length}`),
     row('free', 'Free to watch', watch.filter((w) => w.section === 'free').map((w) => watchTile(w))),
     row('music', 'Listen', watch.filter((w) => w.section === 'music').map((w) => watchTile(w))),
@@ -441,19 +634,152 @@ function renderGames() {
 
 function renderWatch() {
   const root = $('#watch-scroller');
-  const parts = [h('div.view-head', null, h('h2', null, 'Watch'))];
+  const parts = [h('div.view-head', null, h('h2', null, 'Apps'),h('p',null,'Your services. Their original experience.'))];
   const section = (id, title, sub, list) => list.length ? h('section.watch-section', { dataset: { group: 'watch-' + id } },
     h('h3.section-title', null, title),
     h('p.section-sub', null, sub),
     h('div.tile-grid', null, list.map((w) => watchTile(w)))) : null;
   const vis = S.watch.filter((w) => !w.hidden);
   parts.push(
-    section('stream', 'Streaming', 'Opens right here in BWOS. Sign in once and you stay signed in; your controller drives everything.', vis.filter((w) => w.section === 'stream')),
+    section('stream', 'Streaming', 'Open an app directly. Discover its recommendations in For You.', vis.filter((w) => w.section === 'stream')),
     section('free', 'Free to watch', 'Free, legal and ad-supported. Availability depends on your country.', vis.filter((w) => w.section === 'free')),
     section('music', 'Music', 'Keep it playing while you browse.', vis.filter((w) => w.section === 'music')),
     section('hidden', 'Hidden', 'Press Y to show an app again.', S.watch.filter((w) => w.hidden))
   );
   root.replaceChildren(...parts.filter(Boolean));
+}
+
+function renderHub() {
+  clearTimeout(discoveryFilterTimer);
+  const app=hubId==='all'?{id:'all',name:'All services',color:'#8b7bff'}:watchById(hubId); if(!app) return;
+  const root=$('#foryou-rows'); root.dataset.service=hubId; root.style.setProperty('--service-color',app.color || '#8b7bff');
+  const button=(action,label)=>h('button.btn', {type:'button','data-focus':!(action==='more' && recommendationSyncing.has(hubId)),disabled:action==='more' && recommendationSyncing.has(hubId),dataset:{kind:'hubAction',action,key:'hub:'+action}},action==='more' && recommendationSyncing.has(hubId)?'Refreshing…':label);
+  const search=h('input.field', {id:'hub-query',type:'search',maxlength:200,autocomplete:'off',spellcheck:'false',placeholder:hubId==='all'?'Search your services':'Search '+app.name,'aria-label':'Search '+app.name,'data-focus':true,dataset:{kind:'hubQuery',key:'hub:query'}});
+  search.value=hubQuery;
+  search.addEventListener('input',()=>{hubQuery=search.value; searchGeneration++; discoverySearching=false; discoverySearch=null; clearTimeout(discoveryFilterTimer); discoveryFilterTimer=setTimeout(renderHubContents,150);});
+  const types=hubId==='youtube'?{all:'Home',saved:'Saved videos',recent:'Recently watched'}:{all:'Home',movie:'Movies',show:'Series'};
+  const chips=Object.entries(types).map(([type,label])=>h('button.chip'+(hubType===type?'.active':''),{type:'button','data-focus':true,'aria-pressed':String(hubType===type),dataset:{kind:'hubType',type,key:'hub:type:'+type}},label));
+  root.replaceChildren(...[
+    h('div.hub-heading.view-head',null,h('div.hub-brand',null,app.iconUrl?h('img',{src:app.iconUrl,alt:''}):null,
+      h('div',null,h('p.discovery-eyebrow',null,'YOUR NEXT GREAT WATCH'),h('h2',null,hubId==='all'?'For You':app.name))),
+      h('div.hub-actions',null,button('more','More'),hubId!=='all'&&button('app',hubId==='youtube'?'Open YouTube TV':'Open app'))),
+    serviceSwitcher(S,hubId),
+    h('div.hub-toolbar',null,h('div.discovery-types',null,...chips),h('div.discovery-search',null,search,button('search','Search'))),
+    h('p.discovery-status',{id:'discovery-status',role:'status','aria-live':'polite'},discoverySearching?'Searching your services…':discoverySearch?'Results from your apps':recommendationStatus()),
+    h('div', {id:'hub-content',role:'region','aria-label':app.name+' recommendations'})].filter(Boolean));
+  renderHubContents();
+}
+function renderHubContents() {
+  const root=$('#hub-content'); if(!root) return;
+  root.replaceChildren(recommendationContents(discoveryState(),{service:hubId,query:discoverySearch?'':hubQuery,type:hubType,search:!!discoverySearch},recommendationFactories));
+  if(!hubQuery && ['youtube','netflix','prime'].includes(hubId)) {
+    const count=(S.recommendations?.[hubId]?.rows || []).reduce((sum,row)=>sum+(row.items?.length || 0),0);
+    root.append(h('div.discovery-end',null,h('button.btn',{'data-focus':true,disabled:recommendationSyncing.has(hubId),dataset:{kind:'hubAction',action:'moreRecommendations',key:'hub:loadMore'}},recommendationSyncing.has(hubId)?'Loading…':count>=360?'Refresh recommendations':count?'Load more recommendations':'Get recommendations'),h('p',null,count>=360?'Showing the current snapshot. Refresh for new picks.':'Load more from your signed-in app page.')));
+  }
+}
+function discoveryState() {return discoverySearch?{...S,forYou:[],upNext:[],videos:[],recommendations:discoverySearch}:S;}
+function recommendationStatus() {
+  const services=['youtube','netflix','prime'].filter(id=>watchById(id)&&!watchById(id).hidden&&(hubId==='all'||id===hubId));
+  const loading=services.filter(id=>recommendationSyncing.has(id)).map(id=>watchById(id).name);
+  if(loading.length)return 'Loading recommendations from '+loading.join(', ')+'…';
+  return services.map(id=>recommendationSyncStatus.get(id)).filter(Boolean).map(message=>hubId==='all'?message.split('. Open the app')[0]:message).join(' · ');
+}
+function maybeRefreshRecommendations() {
+  if(!S.watch?.length || (discoveryPrefetched && (view!=='foryou' || hubQuery)))return;
+  // The bridge is installed before the UI. Its ping can miss the first state
+  // snapshot; that transient status must not suppress initial discovery.
+  discoveryPrefetched=true;
+  for(const service of ['youtube','netflix','prime'].filter(id=>watchById(id)&&!watchById(id).hidden&&(view!=='foryou'||hubId==='all'||id===hubId))) {
+    const feed=S.recommendations?.[service],count=(feed?.rows || []).reduce((sum,row)=>sum+(row.items?.length || 0),0);
+    if((count<48 || Number(feed?.collector || 0)<3 || Date.now()/1000-Number(feed?.updated || 0)>21600) &&
+      Date.now()-(recommendationSyncAttempts.get(service) || 0)>120000)hubAction('sync',service,false);
+  }
+}
+async function runDiscoverySearch() {
+  const query=hubQuery.trim();if(!query){discoverySearch=null;renderHubContents();return;}
+  const generation=++searchGeneration,service=hubId;
+  discoverySearching=true;discoverySearch=null;hubType='all';renderHub();
+  const providers=['youtube','netflix','prime'].filter(id=>watchById(id) && !watchById(id).hidden && (service==='all' || service===id));
+  if(!providers.length){discoverySearching=false;renderHub();toast('Search is available for YouTube, Netflix and Prime Video.','info');return;}
+  const results=await Promise.allSettled(providers.map(async id=>({id,result:await searchServiceRecommendations(id,query)})));
+  if(generation!==searchGeneration || service!==hubId)return;
+  discoverySearching=false;
+  const feeds={},errors=[];
+  for(const result of results)if(result.status==='fulfilled')feeds[result.value.id]={updated:Date.now()/1000,rows:result.value.result.rows || []};else errors.push(result.reason?.message || 'Search unavailable');
+  discoverySearch=Object.keys(feeds).length?feeds:null;renderHub();
+  $('#discovery-status').textContent=Object.keys(feeds).length?'Results for “'+query+'”'+(errors.length?' · Some services are unavailable':''):errors[0] || 'No results found';
+  focus.set($('#hub-content .row [data-focus]') || $('#hub-query'));
+}
+
+function openWatch(id) {
+  if(id!=='all' && !watchById(id)) return;
+  hubId=id; hubQuery=''; hubType='all'; discoverySearch=null;discoverySearching=false;searchGeneration++;closeModal(); renderHub();
+  $('#foryou-rows').style.transform='translateY(0px)';
+  switchTab('foryou',{focusContent:true});
+  maybeRefreshRecommendations();
+}
+function browseByName(name,direct=false) {
+  const matches=matchVoiceNames(voiceAlias(name),S.watch.filter(app=>!app.hidden));
+  if(matches.length===1) return direct?openServiceApp(matches[0].id):openWatch(matches[0].id);
+  return toast('Name a service such as YouTube, Netflix or Prime Video.','mic');
+}
+async function hubAction(action,serviceOverride=hubId,notify=true) {
+  if(action==='search')return runDiscoverySearch();
+  if(action==='moreRecommendations')return hubAction('sync');
+  if(action==='more')return confirm(watchById(hubId)?.name || 'Recommendations','',[
+    ...(['youtube','netflix','prime'].includes(hubId)?[['sync','Refresh from app','refresh',()=>hubAction('sync')]]:hubId==='all'?['youtube','netflix','prime'].filter(id=>watchById(id)&&!watchById(id).hidden).map(id=>['sync:'+id,'Refresh '+watchById(id).name,'refresh',()=>{openWatch(id);return hubAction('sync');}]):[]),
+    ...(hubId==='youtube'?[['add','Save a video link','play',()=>hubAction('add')]]:[['refresh','Refresh catalogue','refresh',()=>hubAction('refresh')]]),
+    ['cancel','Cancel']]);
+  if(action==='back') return switchTab('watch',{focusContent:true});
+  if(action==='app') return openServiceApp(hubId);
+  if(action==='refresh') {await api.refreshForYou(); toast('Refreshing catalogue…','refresh'); return;}
+  if(action==='sync') {
+    const service=serviceOverride,button=hubId===service && $('[data-kind="hubAction"][data-action="sync"]');
+    if(recommendationSyncing.has(service))return;
+    recommendationSyncing.add(service);
+    recommendationSyncStatus.delete(service);
+    if(!discoverySearching && !discoverySearch && $('#discovery-status'))$('#discovery-status').textContent=recommendationStatus();
+    const pendingMore=hubId===service && $('[data-kind="hubAction"][data-action="more"]');
+    if(pendingMore){pendingMore.disabled=true;pendingMore.removeAttribute('data-focus');pendingMore.textContent='Refreshing…';}
+    recommendationSyncAttempts.set(service,Date.now());
+    if(button){button.disabled=true;button.textContent='Syncing…';}
+    const count=(S.recommendations?.[service]?.rows || []).reduce((sum,row)=>sum+(row.items?.length || 0),0);
+    try {
+      const result=await syncServiceRecommendations(service,Math.min(360,Math.max(60,count+60)));
+      const captured=Number(result.captured ?? result.count) || 0;
+      const message=watchById(service).name+': '+captured+' cards collected'+(captured<48?'. Open the app to check your profile, then refresh.':'');
+      recommendationSyncStatus.set(service,message);await reload();if(notify)toast(message,captured<48?'info':'check');
+    }
+    catch(error){recommendationSyncStatus.set(service,watchById(service).name+': '+error.message);if(notify)toast(error.message,'alert',true);}
+    finally{
+      recommendationSyncing.delete(service);
+      if(!discoverySearching && !discoverySearch && $('#discovery-status'))$('#discovery-status').textContent=recommendationStatus();
+      if(hubId===service)renderHubContents();
+      const more=hubId===service && $('[data-kind="hubAction"][data-action="more"]');
+      if(more){more.disabled=false;more.setAttribute('data-focus','');more.textContent='More';}
+      if(button?.isConnected){button.disabled=false;button.textContent='Sync from '+(watchById(service)?.name || service);}
+    }
+    return;
+  }
+  if(action==='add') return addVideoPanel();
+  if(action==='youtubeSearch') {
+    const search=h('input.field', {type:'search',maxlength:200,placeholder:'Search YouTube','aria-label':'Search all of YouTube','data-focus':true,dataset:{kind:'btn',action:'search'}});
+    search.value=hubQuery;
+    return showPanel(h('div.modal-panel',null,h('h2.modal-title',null,'Search YouTube'),search,h('div.modal-actions',null,
+      h('button.btn',{'data-focus':true,dataset:{kind:'btn',action:'search'}},'Search'),h('button.btn',{'data-focus':true,dataset:{kind:'btn',action:'cancel'}},'Cancel'))),
+      {search:()=>search.value.trim()&&handleVoice({action:'youtubeSearch',value:search.value.trim()})},search);
+  }
+}
+function addVideoPanel() {
+  const field=h('input.field',{type:'url',maxlength:2000,placeholder:'https://www.youtube.com/watch?v=…','aria-label':'YouTube video link','data-focus':true,dataset:{kind:'btn',action:'save',stay:'1'}});
+  const status=h('p.modal-text',{role:'status'},'Paste a video link. You can also type using your phone keyboard.');
+  const save=h('button.btn',{'data-focus':true,dataset:{kind:'btn',action:'save',stay:'1'}},'Save video');
+  let saving=false;
+  showPanel(h('div.modal-panel',null,h('h2.modal-title',null,'Add YouTube video'),field,status,h('div.modal-actions',null,save,
+    h('button.btn',{'data-focus':true,dataset:{kind:'btn',action:'phone',stay:'1'}},'Phone keyboard'),h('button.btn',{'data-focus':true,dataset:{kind:'btn',action:'cancel'}},'Cancel'))),
+    {save:async()=>{if(saving)return; if(!youtubeId(field.value)){status.textContent='Enter a valid YouTube video link.';return;} saving=true; save.disabled=true; status.textContent='Saving video…';
+      try {await api.addVideo(field.value); if(field.isConnected && modalOpen){closeModal(); await reload(); openWatch('youtube'); toast('Video saved','check');}}
+      catch(error){status.textContent=error.message;} finally {saving=false;save.disabled=false;}},phone:async()=>{focus.set(field); const remote=await api.keyboard(); if(remote.url && window.BWOSQR){const qr=h('div.video-link-qr',{html:window.BWOSQR.svg(remote.url,{dark:'#0b0c12'})}); field.parentElement.append(qr);}else status.textContent='Phone keyboard is unavailable.';}},field);
 }
 
 // ---------- settings
@@ -486,15 +812,34 @@ function renderSettings() {
   const pads = S.controllers || [];
 
   const list = h('div', { dataset: { group: 'settings', remember: '' } },
+    h('div.settings-group', null, h('h3', null, 'Voice'),
+      setting({ key: 'voiceInstall', title: S.voice?.installing ? 'Setting up your assistant…' : 'Download local voice', desc: S.voice?.installError || S.voice?.installMessage || 'One-time setup. No fees, accounts or audio uploads.', ico: 'mic', value: S.voice?.available ? 'Installed' : undefined }),
+      setting({ key: 'voiceEnabled', title: 'Voice control', desc: 'Uses the selected microphone. Off releases it completely.', ico: 'mic', value: toggle(st.voiceEnabled) }),
+      setting({ key: 'voiceEngine', title: 'Recognition', desc: st.voiceEngine === 'vosk' ? 'Legacy lightweight recognition.' : `Whisper multilingual · ${S.voice?.backend || 'automatic acceleration'}`, ico: 'mic', value: cycleValue(st.voiceEngine === 'vosk' ? 'Vosk (legacy)' : 'Whisper') }),
+      setting({ key: 'voiceLanguage', title: 'Recognition language', desc: 'Automatic handles English and Hindi without selecting an accent.', ico: 'mic', value: cycleValue(st.voiceLanguage === 'hi' ? 'हिंदी' : st.voiceLanguage === 'auto' ? 'Automatic' : 'English') }),
+      setting({ key: 'voiceReplies', title: 'Spoken replies', desc: 'Uses voices installed in Windows. Recognition pauses while the assistant speaks.', ico: 'sound', value: toggle(st.voiceReplies !== false) }),
+      setting({ key: 'voiceMode', title: 'Start listening', desc: 'Say “Hey console”, then your command. Follow-up commands work for 12 seconds; direct listening remains optional.', ico: 'mic', value: cycleValue(st.voiceMode === 'wake' ? 'Hey console' : st.voiceMode === 'everywhere' ? 'Commands anywhere' : 'BWOS only · no wake phrase') }),
+      setting({ key: 'voiceMicrophone', title: 'Microphone', ico: 'mic', value: cycleValue((S.voice?.microphones || []).find(m => m.id === st.voiceMicrophone)?.name || 'Windows default') }),
+      h('div.voice-input-check', null,
+        h('label', { for: 'voice-input-meter' }, 'Microphone activity'),
+        h('meter', { id: 'voice-input-meter', min: 0, max: 100, value: S.voice?.inputLevel || 0 }),
+        h('p', { id: 'voice-input-signal' }, S.voice?.capturing ? S.voice.signalMessage : S.voice?.message || 'Voice control is off'),
+        h('p', { id: 'voice-input-heard' }, S.voice?.feedback || 'Say “Open YouTube”, then pause for two seconds.')),
+      setting({ key: 'voiceHelp', title: 'What can I say?', desc: 'Commands, search and numbered choices.', ico: 'info' }),
+      h('p.voice-input-check', null, S.browserIntegration?.connected ? 'Streaming integration connected.' : 'Streaming integration is not reporting. Restart BWOS if search or the playback cloud is unavailable.'),
+      setting({ key: 'microphoneSettings', title: 'Microphone permissions', desc: 'Opens Windows microphone settings.', ico: 'settings' })),
     h('div.settings-group', null, h('h3', null, 'Controller'),
       setting({ key: 'trigger', title: 'Open BWOS with', desc: 'Works everywhere — on the desktop and inside games.', ico: 'gamepad', value: h('span.cycle', null, h('span.arrow', null, '‹'), trig[1], h('span.arrow', null, '›')) }),
       setting({ key: 'swapAB', title: 'Nintendo-style confirm', desc: 'Swap the confirm and back buttons.', ico: 'swap', value: toggle(input.swapAB) }),
       setting({ key: 'controllerBridge', title: 'Controller as remote in streaming apps', desc: 'D-pad = arrows, A = select, right stick = mouse, B = back.', ico: 'mouse', value: toggle(st.controllerBridge) }),
+    ),
+    h('div.settings-group', null, h('h3', null, 'Connections'),
       setting({ key: 'castEnabled', title: 'Cast from your phone', desc: `In the YouTube app on your phone, tap Cast and choose “${st.castName || 'BWOS'}”. Same Wi-Fi as this PC.`, ico: 'cast', value: toggle(st.castEnabled) }),
       setting({ key: 'airplayEnabled', title: 'AirPlay from iPhone or Mac',
         desc: st.airplayInstalled ? `Control Centre → Screen Mirroring → “${st.castName || 'BWOS'}”. Press Home to come back.` : 'Needs UxPlay; see the README (AirPlay).',
         ico: 'cast', value: st.airplayInstalled ? toggle(st.airplayEnabled) : h('span', null, 'Not installed') }),
       setting({ key: 'phoneKeyboard', title: 'Phone remote', desc: 'Scan once with any phone: swipe to move, tap to select, Back, Home, volume and a keyboard. In apps, press Menu.', ico: 'wifi' }),
+      setting({ key: 'screenSharing', title: 'Stream BWOS to another device', desc: 'Share this PC’s screen and audio with a Mac, phone or browser on your local network.', ico: 'cast' }),
       st.phones ? setting({ key: 'forgetPhones', title: 'Forget paired phones', desc: `${st.phones} phone${st.phones === 1 ? '' : 's'} can control BWOS without scanning again.`, ico: 'eyeoff' }) : null),
     h('div.settings-group', null, h('h3', null, 'For You'),
       setting({ key: 'country', title: 'Recommendations region', desc: 'Which country’s Netflix / Prime Video catalogue to recommend from.', ico: 'tv', value: h('span.cycle', null, h('span.arrow', null, '‹'), REGIONS.find((r) => r[0] === st.country)?.[1] || st.country || 'Auto', h('span.arrow', null, '›')) }),
@@ -523,7 +868,7 @@ function renderSettings() {
         h('dt', null, 'Games'), h('dd', null, String(S.games.length)),
         h('dt', null, 'Player'), h('dd', null, st.browser ? st.browser.replace('msedge', 'Microsoft Edge').replace('chrome', 'Google Chrome') : 'Not found'),
         h('dt', null, 'Version'), h('dd', null, S.version || '—'))),
-    h('div.info-card', null, h('h4', null, 'Make the home button open BWOS'),
+    h('details.info-card.settings-help', null, h('summary',{'data-focus':true,dataset:{kind:'settingsSection',key:'settings:help'},onclick:event=>{event.stopPropagation();focus.set(event.currentTarget);}},'Home button setup'),
       h('ol', { html:
         '<li>In <b>Steam → Settings → Controller</b>, turn off <b>Guide Button Focuses Steam</b>.</li>' +
         '<li>In <b>Windows Settings → Gaming → Game Bar</b>, turn off <b>Open Game Bar using this button on a controller</b>.</li>' +
@@ -532,7 +877,7 @@ function renderSettings() {
 
   $('#settings-scroller').replaceChildren(
     h('div.view-head', null, h('h2', null, 'Settings')),
-    h('div.settings-layout', null, list, info));
+    h('div.settings-layout', null, settingsSections(list,openSettingsSections), info));
 }
 
 // ------------------------------------------------------------------ hero & background
@@ -552,10 +897,7 @@ function onFocusChange(el, opts) {
   heroTimer = setTimeout(() => updateHero(el), opts && opts.instant ? 0 : 90);
 }
 
-const titleById = (id) => {
-  for (const r of S.forYou || []) for (const t of r.items) if (t.id === id) return t;
-  return null;
-};
+const titleById = id => hubCatalogue(S).find(title=>title.id===id) || null;
 const upNextById = (id) => (S.upNext || []).find((e) => e.id === id);
 
 function minutesLeft(e) {
@@ -608,7 +950,7 @@ function updateHero(el) {
   } else if (kind === 'title') {
     const t = titleById(el.dataset.id);
     if (!t) return;
-    kicker.push(h('span.pill', null, t.type === 'show' ? 'Series' : 'Movie'));
+    if(t.type)kicker.push(h('span.pill', null, t.type === 'show' ? 'Series' : 'Movie'));
     if (t.imdb) kicker.push(h('span', null, `IMDb ${Number(t.imdb).toFixed(1)}`));
     title = t.title;
     meta = [t.year ? String(t.year) : null, (t.genres || []).join(', ') || null, 'On ' + t.offers.map((o) => o.name).join(' · ')].filter(Boolean);
@@ -714,15 +1056,18 @@ function updateHints() {
     if (k === 'game') {
       const g = gameByKey(el.dataset.key);
       items.push(hint('accept', g && g.running ? 'Resume' : 'Play'), hint('options', 'Options'));
-    } else if (k === 'watch') items.push(hint('accept', 'Open'), hint('options', 'Options'));
+    } else if (k === 'watch') items.push(hint('accept', 'Open app'), hint('options', 'Options'));
+    else if(k==='hubVideo') items.push(hint('accept','Play'),hint('options','Options'));
     else if (k === 'title') items.push(hint('accept', 'Watch'), hint('options', 'More'));
     else if (k === 'resume') items.push(hint('accept', 'Resume'), hint('options', 'Options'));
     else if (k === 'setting') items.push(hint('accept', 'Change'));
     else if (k === 'controls') items.push(hint('accept', 'Controller settings'));
+    else if (k === 'playback' || k === 'playbackPanel') items.push(hint('accept', el.title || 'Control player'));
     else if (k === 'profile') items.push(hint('accept', 'Change name'));
     else items.push(hint('accept', 'Select'));
     if (view !== 'home' || (el && !el.classList.contains('tab'))) items.push(hint('back', 'Back'));
     items.push(hint('tabs', 'Switch'));
+    if ((S.playback || []).length) items.push(hint('secondary', k === 'playback' ? 'Leave player controls' : 'Now playing'));
   }
   $('#hints').replaceChildren(...items);
 }
@@ -730,14 +1075,15 @@ function updateHints() {
 // ------------------------------------------------------------------ navigation
 
 function switchTab(name, opts = {}) {
-  if (!TABS.includes(name)) return;
+  if(name==='hub')name='foryou';
+  if (!TABS.includes(name) && name !== 'hub') return;
   const changed = view !== name;
   view = name;
   document.body.dataset.view = name;
-  $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === name));
-  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.view').forEach((v) => { const active = v.dataset.view === name; v.classList.toggle('active', active); v.setAttribute('aria-hidden', String(!active)); });
+  $$('#tabs .tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === (name==='hub'?'watch':name)));
   if (changed && !opts.silent) sound.tab();
-  if (name === 'watch' || name === 'settings') setBackground(null, null);
+  if (name === 'watch' || name === 'settings' || name === 'devices' || name === 'hub' || name === 'foryou') setBackground(null, null);
   else if (HERO_VIEWS.includes(name)) {
     // Show the hero for the focused (or remembered / first) item of that view.
     const v = $('#view-' + name);
@@ -751,13 +1097,17 @@ function switchTab(name, opts = {}) {
       (name === 'foryou' && focus.remembered('foryou-rows')) ||
       (name === 'games' && focus.remembered('games-grid')) ||
       (name === 'settings' && focus.remembered('settings')) ||
+      (['hub','foryou'].includes(name) && (v.querySelector('.recommendation-feature [data-focus]') || v.querySelector('.recommendation-shelves .row [data-focus]'))) ||
       v.querySelector(name === 'games' ? '#games-grid [data-focus]' : '[data-focus]');
     if (target) focus.set(target, { instant: false });
   }
   updateHints();
+  refreshVoiceNumbers();
+  if(changed && name==='foryou')maybeRefreshRecommendations();
 }
 
 function goHome() {
+  if(youtubePlayer?.video) youtubePlayer.setDocked(true);
   exitRest();
   exitAmbient();
   closeModal();
@@ -772,7 +1122,7 @@ function describePads() {
     .map((p) => `#${p.index} "${p.id}" mapping=${p.mapping || 'none'} buttons=${p.buttons.length}`).join('; ') || 'none';
 }
 
-function onAction(action, source) {
+async function onAction(action, source) {
   if (action === 'padconnected' || action === 'paddisconnected') {
     api.log(`gamepad ${action === 'padconnected' ? 'connected' : 'disconnected'} → ${describePads()} (glyphs: ${input.family})`);
     renderStatus(); updateHints();
@@ -791,6 +1141,10 @@ function onAction(action, source) {
     return;
   }
 
+  if(!modalOpen && youtubePlayer?.video) {
+    try {if(await youtubePlayer.handleInput(action))return;}
+    catch(error){toast(error.message,'alert');return;}
+  }
   switch (action) {
     case 'up': case 'down': case 'left': case 'right': {
       const was = focus.current;
@@ -801,16 +1155,23 @@ function onAction(action, source) {
       break;
     }
     case 'accept': activate(focus.current); break;
+    case 'playPause': {
+      if(modalOpen)return;
+      const player=(S.playback || []).find(player=>!player.local);
+      if(player)api.playbackControl(player.id,'toggle').catch(error=>toast(error.message,'alert'));
+      break;
+    }
     case 'back': goBack(); break;
     case 'prevTab':
     case 'nextTab': {
       if (modalOpen) return;
-      const i = TABS.indexOf(view);
+      const i = TABS.indexOf(view==='hub'?'watch':view);
       const next = TABS[(i + (action === 'nextTab' ? 1 : TABS.length - 1)) % TABS.length];
       switchTab(next, { focusContent: true });
       break;
     }
     case 'options': openOptions(focus.current); break;
+    case 'secondary': if (!modalOpen) focusPlayback(); break;
     case 'menu': if (!modalOpen) switchTab('settings', { focusContent: true }); break;
     case 'home': goHome(); break;
   }
@@ -818,6 +1179,10 @@ function onAction(action, source) {
 
 function goBack() {
   if (modalOpen) { sound.back(); closeModal(); return; }
+  if(youtubePlayer?.video && !youtubePlayer.docked){youtubePlayer.setDocked(true); focus.set($(`#view-${view} [data-focus]`)); return;}
+  if(focus.current?.closest('#embedded-player')) {leavePlayback();return;}
+  if(view==='hub'){switchTab('watch',{focusContent:true}); return;}
+  if (focus.current?.closest('#now-playing')) { sound.back(); leavePlayback(); return; }
   const cur = focus.current;
   sound.back();
   if (cur && !cur.classList.contains('tab')) {
@@ -834,6 +1199,8 @@ function onClick(e) {
   if (!el) return;
   if (el.classList.contains('tab')) return;
   focus.set(el, { silent: true });
+  if(el.dataset.kind==='hubQuery') {openSearchKeyboard();return;}
+  if(el.matches('input,textarea')) return;
   activate(el);
 }
 
@@ -855,14 +1222,39 @@ async function activate(el) {
       return;
     }
     switch (kind) {
+      case 'settingsSection': return el.click();
+      case 'screenSharing': return openScreenSharing();
+      case 'recommendInfo': return el.click();
+      case 'embedded': return youtubePlayer.control(el.dataset.action);
+      case 'recommendService': return openWatch(el.dataset.id);
+      case 'hubAction': return hubAction(el.dataset.action);
+      case 'hubQuery': return openSearchKeyboard();
+      case 'hubType': hubType=el.dataset.type; renderHub(); focus.set($(`[data-key="hub:type:${hubType}"]`)); return;
+      case 'hubVideo': {
+        const videos=hubVideos(discoveryState()),video=videos.find(video=>video.id===el.dataset.id);
+        const shelf=el.closest('.row');
+        const queue=shelf?$$('[data-kind="hubVideo"]',shelf).map(card=>videos.find(item=>item.id===card.dataset.id)).filter(Boolean):videos;
+        if(video)await playEmbedded(video,queue);return;
+      }
+      case 'playback': return api.playbackControl(el.dataset.id, el.dataset.action);
+      case 'playbackPanel': return focusPlayback();
       case 'game': return playGame(el.dataset.key);
-      case 'watch': return openWatch(el.dataset.id);
+      case 'watch': return openServiceApp(el.dataset.id);
       case 'title': return playTitle(el.dataset.id);
       case 'resume': return resumeWatching(el.dataset.id);
       case 'action': sound.select(); return quickAction(el.dataset.action);
       case 'filter': sound.select(); gamesFilter = el.dataset.id; renderGames(); focus.set($(`#games-chips [data-key="filter:${el.dataset.id}"]`), { silent: true }); updateHints(); return;
       case 'sort': sound.select(); gamesSort = el.dataset.id; renderGames(); focus.set($(`#games-chips [data-key="sort:${el.dataset.id}"]`), { silent: true }); updateHints(); return;
       case 'setting': sound.select(); return changeSetting(el.dataset.setting);
+      case 'voiceHelp': return openVoiceHelp();
+      case 'device': {
+        const d = (S.devices?.audio || []).find(x => x.id === el.dataset.id);
+        if (!d) return;
+        if (!d.canControl) return api.deviceSettings();
+        const run = async () => { const r = await api.deviceConnection(d.id, !d.connected); toast(r.message, 'bluetooth'); setTimeout(reload, 2500); };
+        if (d.connected) return confirm(`Disconnect ${d.name}?`, 'Sound will move to another available output.', [['disconnect', 'Disconnect', 'bluetooth', run], ['cancel', 'Cancel']]);
+        await run(); return;
+      }
       case 'controls': sound.select(); return openControls();
       case 'profile': sound.select(); return openProfile();
     }
@@ -911,7 +1303,7 @@ async function startGame(g) {
   }, 60000);
 }
 
-async function openWatch(id) {
+async function openServiceApp(id) {
   const w = watchById(id);
   if (!w) return;
   return openInside({ url: w.url, title: w.name, sub: 'Opening…', brand: w.color, returnKey: 'watch:' + id });
@@ -919,26 +1311,26 @@ async function openWatch(id) {
 
 /** Opens a streaming page inside this same window, remembering where we were for the way back. */
 async function openInside({ url, title, sub, brand, bg, returnKey }) {
+  youtubePlayer?.pause();
   sound.launch();
   const tips = [['accept', 'Select'], ['back', 'Back'], ['secondary', 'Play / pause']].map(([a, t]) => hint(a, t));
   tips.push(h('div.hint', null, 'Home button returns to BWOS'));
   showLaunch({ key: returnKey, title, sub, brand, bg, tip: tips });
   const cur = focus.current;
   try { sessionStorage.setItem('bwos.return', JSON.stringify({ view, key: (cur && cur.dataset.key) || returnKey })); } catch {}
-  await sleep(700);
-  location.href = url;
+  try { await openServiceTab(url); }
+  catch (error) { toast(error.message, 'alert'); }
+  finally { hideLaunch(); }
 }
 
 async function playTitle(id) {
-  const t = titleById(id);
+  const t = view==='foryou' ? hubCatalogue(discoveryState(),hubId).find(title=>title.id===id) : titleById(id);
   if (!t || !t.offers.length) return;
-  const go = (o) => {
-    const app = watchById(o.app);
-    return openInside({ url: withAutoplay(o.url), title: t.title, sub: 'Starting on ' + o.name + '…', brand: app && app.color, bg: t.backdrop || t.poster, returnKey: 'title:' + t.id });
-  };
-  if (t.offers.length === 1) return go(t.offers[0]);
-  return confirm(t.title, 'Where would you like to watch it?', [
-    ...t.offers.map((o, i) => ['offer' + i, (o.free ? o.name + ' · Free' : o.name), 'play', () => go(o)]),
+  const go = o => watchOffer(t,o);
+  const offers=view==='foryou' && hubId!=='all'?t.offers.filter(offer=>offer.app===hubId):t.offers;
+  if(offers.length===1)return go(offers[0]);
+  return confirm(t.title, [t.year,(t.genres || []).join(' · '),t.description].filter(Boolean).join('\n\n'), [
+    ...offers.map((o, i) => ['offer' + i, 'Watch on '+(o.free ? o.name + ' · Free' : o.name), 'play', () => go(o)]),
     ['cancel', 'Cancel']
   ]);
 }
@@ -946,6 +1338,7 @@ async function playTitle(id) {
 async function resumeWatching(id) {
   const e = upNextById(id);
   if (!e) return;
+  if(e.app==='youtube' && youtubeId(e.url)){await playEmbedded({...e,id:youtubeId(e.url)},hubVideos(S));return;}
   const app = e.app && watchById(e.app);
   return openInside({ url: withAutoplay(e.url), title: e.title, sub: e.subtitle ? 'Resuming ' + e.subtitle : 'Resuming…', brand: app && app.color, bg: e.backdrop || e.artwork, returnKey: 'resume:' + e.id });
 }
@@ -955,8 +1348,21 @@ function withAutoplay(url) {
   return url.includes('#') ? url + '&bwos-play' : url + '#bwos-play';
 }
 
+async function playEmbedded(video,queue=[]) {
+  youtubePlayer.instructions.textContent=label('accept')+' · Play / pause    ◀ ▶ · Skip 10 s    ↑ / Menu · Controls    Home / Back · Browse';
+  await youtubePlayer.play(video,queue);
+  const button=youtubePlayer.controls.querySelector('[data-action="toggle"][data-focus]') || youtubePlayer.controls.querySelector('[data-action="app"]');
+  if(youtubePlayer.error && button)focus.set(button);
+}
+function watchOffer(title,offer) {
+  if(offer.app==='youtube' && youtubeId(offer.url))return playEmbedded({...title,url:offer.url},hubVideos(S));
+  const app=watchById(offer.app);
+  return openInside({url:withAutoplay(offer.url),title:title.title,sub:'Starting on '+offer.name+'…',brand:app?.color,bg:title.backdrop || title.poster,returnKey:'title:'+title.id});
+}
+
 async function quickAction(action) {
   switch (action) {
+    case 'devices': return switchTab('devices', { focusContent: true });
     case 'settings': return switchTab('settings', { focusContent: true });
     case 'bigpicture': return api.system('bigpicture');
     case 'desktop': return api.system('desktop');
@@ -969,6 +1375,27 @@ async function quickAction(action) {
 async function changeSetting(key) {
   const st = S.settings;
   switch (key) {
+    case 'deviceRefresh': await api.refreshDevices(); toast('Refreshing devices…', 'refresh'); break;
+    case 'bluetoothSettings': return api.deviceSettings();
+    case 'microphoneSettings': return api.deviceSettings('microphone');
+    case 'voiceHelp': return openVoiceHelp();
+    case 'voiceInstall':
+      if (S.voice?.installing) return;
+      return confirm('Set up local voice?', 'Downloads the free local recognition engine and model once (up to about 1.3 GB with NVIDIA acceleration). Existing files are skipped. Audio stays on this PC.', [
+        ['install', 'Download', 'mic', async () => { await api.installVoice(); toast('Downloading offline voice…', 'mic'); }], ['cancel', 'Cancel']]);
+    case 'voiceEnabled': await api.setting(key, !st[key]); break;
+    case 'voiceReplies': await api.setting(key, st[key] === false); break;
+    case 'voiceEngine': await api.setting(key, st[key] === 'vosk' ? 'whisper' : 'vosk'); break;
+    case 'voiceLanguage': {
+      const languages = ['auto', 'en', 'hi'];
+      await api.setting(key, languages[(languages.indexOf(st[key]) + 1) % languages.length]); break;
+    }
+    case 'voiceMode': { const modes = ['direct', 'everywhere', 'wake']; await api.setting(key, modes[(modes.indexOf(st[key]) + 1) % modes.length]); break; }
+    case 'voiceMicrophone': {
+      const mics = [{ id: -1, name: 'Windows default' }, ...(S.voice?.microphones || [])];
+      const i = mics.findIndex(m => m.id === st[key]);
+      await api.setting(key, mics[(i + 1) % mics.length].id); break;
+    }
     case 'trigger': {
       const i = TRIGGERS.findIndex((t) => t[0] === st.trigger);
       await api.setting('trigger', TRIGGERS[(i + 1) % TRIGGERS.length][0]);
@@ -986,6 +1413,7 @@ async function changeSetting(key) {
       showQr(r);
       return;
     }
+    case 'screenSharing': return openScreenSharing();
     case 'forgetPhones':
       return confirm('Forget paired phones?', 'They will need to scan the QR code on the TV again.', [
         ['go', 'Forget phones', 'eyeoff', async () => { await api.forgetPhones(); toast('Phones forgotten', 'check'); reload(); }],
@@ -1031,6 +1459,14 @@ async function changeSetting(key) {
 function openOptions(el) {
   if (!el || modalOpen) return;
   const kind = el.dataset.kind;
+  if(kind==='hubVideo') {
+    const video=hubVideos(discoveryState()).find(item=>item.id===el.dataset.id); if(!video) return;
+    const options=[['play','Play in BWOS','play',()=>playEmbedded(video,hubVideos(discoveryState()))],
+      ['app','Open in YouTube TV','play',()=>openInside({url:'https://www.youtube.com/tv#/watch?v='+video.id,title:video.title,returnKey:'video:'+video.id})]];
+    if(video.saved) options.push(['remove','Remove saved video','eyeoff',()=>api.removeVideo(video.id).then(reload)]);
+    else options.push(['save','Save video','play',()=>api.addVideo(video.url).then(reload)]);
+    options.push(['cancel','Cancel']); return confirm(video.title,video.author || '',options);
+  }
   if (kind === 'game') {
     const g = gameByKey(el.dataset.key);
     if (!g) return;
@@ -1056,11 +1492,11 @@ function openOptions(el) {
     ]);
   }
   if (kind === 'title') {
-    const t = titleById(el.dataset.id);
+    const t = view==='foryou'?hubCatalogue(discoveryState(),hubId).find(title=>title.id===el.dataset.id):titleById(el.dataset.id);
     if (!t) return;
     sound.select();
     return confirm(t.title, [t.year, (t.genres || []).join(', ')].filter(Boolean).join(' · '), [
-      ...t.offers.map((o, i) => ['offer' + i, 'Watch on ' + o.name, 'play', () => openInside({ url: withAutoplay(o.url), title: t.title, sub: 'Starting on ' + o.name + '…', bg: t.backdrop || t.poster, returnKey: 'title:' + t.id })]),
+      ...t.offers.map((o, i) => ['offer' + i, 'Watch on ' + o.name, 'play', () => watchOffer(t,o)]),
       ['cancel', 'Cancel']
     ]);
   }
@@ -1068,7 +1504,7 @@ function openOptions(el) {
     const w = watchById(el.dataset.id);
     if (!w) return;
     sound.select();
-    const opts = [['open', 'Open', 'play', () => openWatch(w.id)]];
+    const opts = [['open', 'Open '+w.name+' app', 'play', () => openServiceApp(w.id)],['browse', 'Recommendations in For You', 'play', () => openWatch(w.id)]];
     opts.push(['hide', w.hidden ? 'Show app' : 'Hide app', w.hidden ? 'eye' : 'eyeoff', () => api.toggleHidden('watch:' + w.id).then(reload)]);
     opts.push(['cancel', 'Cancel']);
     return confirm(w.name, w.url.replace(/^https?:\/\//, ''), opts);
@@ -1078,6 +1514,7 @@ function openOptions(el) {
 // ------------------------------------------------------------------ modal
 
 function confirm(title, text, options) {
+  prepareModal();
   const modal = $('#modal');
   const handlers = {};
   const buttons = options.map(([id, label, ico, fn]) => {
@@ -1113,7 +1550,31 @@ function showQr(r) {
   updateHints();
 }
 
+function openSearchKeyboard() {
+  const keyboard=searchKeyboard(hubQuery,value=>{hubQuery=value.trim();renderHub();return runDiscoverySearch();},()=>{});
+  showPanel(keyboard.panel,keyboard.handlers,keyboard.first);
+  modalOpen.dispose=keyboard.dispose;
+}
+
+function openScreenSharing() {
+  if(screenSharing.active) {
+    const session=screenSharing.session;
+    const stop=h('button.btn',{type:'button','data-focus':true,dataset:{kind:'btn',action:'stop'}},'Stop sharing');
+    const done=h('button.btn',{type:'button','data-focus':true,dataset:{kind:'btn',action:'cancel'}},'Done');
+    const qr=h('div.qr-box',{html:window.BWOSQR?window.BWOSQR.svg(session.url,{dark:'#0b0c12'}):''});
+    const panel=h('div.modal-panel.modal-qr',null,qr,h('div',null,h('h2.modal-title',null,'BWOS on your other device'),
+      h('p.modal-text',null,'Open this link on your Mac or scan the QR on a phone. Both devices must be on the same local network. The link pairs one viewer and expires after 10 minutes.'),
+      h('div.qr-url',null,session.url),
+      h('p.modal-text',null,screenSharing.media?.getAudioTracks().length?'Screen and audio are being shared. Use Enable sound on the receiving device.':'No audio was captured. Stop and share an entire screen with “Share system audio” selected to include sound.'),
+      h('div.modal-actions',null,stop,done)));
+    showPanel(panel,{stop:()=>screenSharing.stop()},done);return;
+  }
+  confirm('Stream BWOS to another device','Choose a screen and enable “Share system audio” for the full experience. A window shares only that window. Protected Netflix/Prime video may appear black. Only share on a trusted local network.',[
+    ['start','Choose screen & start','cast',async()=>{try{await screenSharing.start();openScreenSharing();}catch(error){if(error.name!=='NotAllowedError')toast(error.message,'alert',true);}}],['cancel','Cancel']]);
+}
+
 function showPanel(panel, handlers, first) {
+  prepareModal();
   const modal = $('#modal');
   modal.replaceChildren(panel);
   // Re-rendering a panel in place keeps the original place to return to.
@@ -1121,6 +1582,11 @@ function showPanel(panel, handlers, first) {
   modal.classList.add('show');
   focus.set(first, { silent: true });
   updateHints();
+}
+
+function prepareModal() {
+  modalOpen?.dispose?.();if(modalOpen)modalOpen.dispose=null;
+  if(youtubePlayer?.video){youtubePlayer.setDocked(true); youtubePlayer.cover(innerWidth<=1100);}
 }
 
 /** Top bar → your name. Type it with a keyboard, or on your phone. */
@@ -1203,7 +1669,9 @@ function openControls(focusKey) {
 function closeModal() {
   if (!modalOpen) return;
   const { restore } = modalOpen;
+  modalOpen.dispose?.();
   modalOpen = null;
+  youtubePlayer?.cover(false);
   $('#modal').classList.remove('show');
   if (restore && restore.isConnected) focus.set(restore, { silent: true });
   updateHints();
@@ -1269,7 +1737,7 @@ function checkIdle() {
 
 /** Ambient music only while BWOS itself is on screen (not for games, streaming apps or the black screen). */
 function ambientSync() {
-  if (!document.hidden && document.hasFocus() && !resting()) sound.startAmbient();
+  if (!document.hidden && document.hasFocus() && !resting() && !(S.playback || []).some(p => !p.paused)) sound.startAmbient();
   else sound.stopAmbient();
 }
 

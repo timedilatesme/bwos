@@ -1,0 +1,38 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>BWOS WebRTC verification</title>
+<style>body{font:18px system-ui;background:#101722;color:#edf3ff;padding:24px}canvas,video{width:320px;border-radius:12px}button{font:inherit;padding:12px;margin-bottom:20px}#result{white-space:pre-wrap}</style>
+<h1>Screen + audio transport test</h1><p>Generated video and tone only. No screen or microphone capture.</p>
+<button id="run">Run WebRTC test</button><div><canvas id="source" width="640" height="360"></canvas><video id="target" muted autoplay playsinline></video></div><pre id="result">Ready</pre>
+<script type="module">
+import {ScreenPeer} from '../ui/js/screen-peer.js';
+const result=document.querySelector('#result');
+document.querySelector('#run').onclick=async()=>{
+  document.querySelector('#run').disabled=true;
+  const canvas=document.querySelector('canvas'),video=document.querySelector('video'),ctx=canvas.getContext('2d');
+  let timer,host,viewer,audio;
+  const assert=(condition,message)=>{if(!condition)throw Error(message);result.textContent+='\nPASS: '+message;};
+  try {
+    result.textContent='Negotiating…';
+    let frame=0;timer=setInterval(()=>{ctx.fillStyle=frame++%2?'#275584':'#317c64';ctx.fillRect(0,0,640,360);ctx.fillStyle='#fff';ctx.font='32px system-ui';ctx.fillText('BWOS · generated frame '+frame,40,180);},60);
+    audio=new AudioContext();await audio.resume();const oscillator=audio.createOscillator(),gain=audio.createGain(),destination=audio.createMediaStreamDestination();gain.gain.value=.03;oscillator.connect(gain).connect(destination);oscillator.start();
+    const source=canvas.captureStream(15);source.addTrack(destination.stream.getAudioTracks()[0]);
+    const hostSignals=[],viewerSignals=[],received=new MediaStream();
+    host=new ScreenPeer({stream:source,send:async(type,data)=>hostSignals.push({type,data})});
+    viewer=new ScreenPeer({send:async(type,data)=>viewerSignals.push({type,data}),received:track=>{received.addTrack(track);video.srcObject=received;video.play().catch(()=>{});}});
+    await host.offer();
+    const deadline=Date.now()+12000;
+    while(Date.now()<deadline && (host.pc.connectionState!=='connected' || received.getTracks().length<2 || video.videoWidth===0)) {
+      await viewer.receive(hostSignals.splice(0));await host.receive(viewerSignals.splice(0));await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    assert(host.pc.connectionState==='connected' && viewer.pc.connectionState==='connected','Two actual WebRTC peers connected');
+    assert(received.getVideoTracks().length===1 && received.getAudioTracks().length===1,'Screen and audio tracks arrived');
+    assert(video.videoWidth===640 && video.videoHeight===360,'Receiver decoded video frames');
+    const analyser=audio.createAnalyser();audio.createMediaStreamSource(received).connect(analyser);await new Promise(resolve=>setTimeout(resolve,600));
+    const values=new Uint8Array(analyser.fftSize);analyser.getByteTimeDomainData(values);
+    assert(values.some(value=>Math.abs(value-128)>1),'Received audio contains the generated tone');
+    source.getTracks().forEach(track=>track.stop());host.close();viewer.close();
+    assert(host.pc.connectionState==='closed' && viewer.pc.connectionState==='closed','Stop closes both media connections');
+    result.dataset.status='passed';
+  }catch(error){result.textContent+='\nFAIL: '+error.message;result.dataset.status='failed';}
+  finally{clearInterval(timer);host?.close();viewer?.close();await audio?.close();}
+};
+</script></html>

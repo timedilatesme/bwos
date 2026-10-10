@@ -10,7 +10,7 @@ using Microsoft.Win32;
 namespace Bwos
 {
     /// <summary>
-    /// Owns the BWOS window: a fullscreen Chromium (Edge by default) app window with its own,
+    /// Owns the BWOS window: a fullscreen Chromium (Edge by default) browser window with its own,
     /// persistent profile. Streaming services open *inside* this same window (you never leave BWOS);
     /// the bundled "bwos-tv" extension adds controller navigation to those sites, and the
     /// profile keeps you signed in to each service.
@@ -18,7 +18,7 @@ namespace Bwos
     internal sealed class ShellManager
     {
         public const string ShellTitle = "BWOS";
-        private const ushort VK_F24 = 0x87; // "go home" signal understood by the bwos-tv extension
+        private const ushort VK_F24 = 0x87; // Handled by remote.js in streaming pages and embedded frames.
 
         private readonly object gate = new object();
         private readonly string browserExe;
@@ -26,6 +26,18 @@ namespace Bwos
         private string shellUrl;
         private List<int> shellPids = new List<int>();
         private DateTime shellPidsAt = DateTime.MinValue;
+        private readonly object contextGate = new object();
+        private string pageKind = "";
+        private DateTime contextAt, integrationAt;
+        public object IntegrationStatus() { lock (contextGate) return new Dictionary<string, object> { { "connected", (DateTime.UtcNow - integrationAt).TotalSeconds < 5 }, { "page", pageKind } }; }
+        public void IntegrationPing() { lock (contextGate) integrationAt = DateTime.UtcNow; }
+        public void ReportContext(string kind, bool front)
+        {
+            lock (contextGate) integrationAt = DateTime.UtcNow;
+            if (!front || !ShellIsForeground()) return;
+            lock (contextGate) { pageKind = kind; contextAt = DateTime.UtcNow; }
+        }
+        public bool YouTubeIsForeground() { lock (contextGate) return ShellIsForeground() && pageKind == "youtube" && (DateTime.UtcNow - contextAt).TotalSeconds < 4; }
 
         public ShellManager(Config config)
         {
@@ -47,6 +59,59 @@ namespace Bwos
             Log.Write("closing BWOS window left over from a previous run");
             KillProfile(shellProfile);
             shellPids = new List<int>();
+        }
+
+        public void RefreshAdapterCache()
+        {
+            try
+            {
+                string manifest = Path.Combine(Paths.AppDir, @"extensions\bwos-tv\manifest.json");
+                if (!File.Exists(manifest)) return;
+                string version = Json.Str(Json.ParseObject(File.ReadAllText(manifest)), "version", "");
+                if (string.IsNullOrEmpty(version)) return;
+                // Development builds can change scripts without changing the
+                // manifest version. Chromium otherwise reuses an older worker.
+                string directory = Path.GetDirectoryName(manifest);
+                string source = string.Join("\n", Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                    .Where(path => new[] { ".js", ".json", ".css" }.Contains(Path.GetExtension(path)))
+                    .OrderBy(path => path, StringComparer.Ordinal).Select(path => Path.GetFileName(path) + "\n" + File.ReadAllText(path)));
+                using (var hash = System.Security.Cryptography.SHA256.Create())
+                    version += ":" + BitConverter.ToString(hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes(source))).Replace("-", "");
+                PrepareAdapterCache(shellProfile, version);
+            }
+            catch (Exception ex) { Log.Write("browser adapter cache refresh failed: " + ex.Message); }
+        }
+
+        // Chromium can retain an old unpacked extension worker across app updates.
+        // Refresh its regenerable worker registry once per extension release; site
+        // cookies, local storage, IndexedDB and media caches stay in the profile.
+        internal static bool PrepareAdapterCache(string profile, string version)
+        {
+            string root = Path.GetFullPath(profile).TrimEnd(Path.DirectorySeparatorChar);
+            string marker = Path.Combine(root, "bwos-adapter-version.txt");
+            if (File.Exists(marker) && File.ReadAllText(marker) == version) return false;
+            string workers = Path.Combine(root, @"Default\Service Worker");
+            foreach (string path in new[] { root, Path.Combine(root, "Default"), workers })
+                if (Directory.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("Cannot refresh a redirected browser cache");
+            string backup = Path.Combine(workers, "BWOS-backup-" + Guid.NewGuid().ToString("N"));
+            foreach (string name in new[] { "Database", "ScriptCache" })
+            {
+                string source = Path.GetFullPath(Path.Combine(workers, name));
+                string target = Path.GetFullPath(Path.Combine(backup, name));
+                if (!source.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                    !target.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Browser cache path outside BWOS profile");
+                if (!Directory.Exists(source)) continue;
+                if ((File.GetAttributes(source) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("Cannot move a redirected browser cache");
+                Directory.CreateDirectory(backup);
+                Directory.Move(source, target);
+            }
+            Directory.CreateDirectory(root);
+            File.WriteAllText(marker, version);
+            Log.Write("browser adapter cache prepared for " + version);
+            return true;
         }
 
         public void SetShellUrl(string url) { shellUrl = url; }
@@ -84,23 +149,21 @@ namespace Bwos
             if (fg == IntPtr.Zero) return false;
             // Cheap filters first: this runs from the controller thread, including during games.
             if (!Native.WindowClass(fg).StartsWith("Chrome_WidgetWin")) return false;
-            if (Native.WindowText(fg) == ShellTitle) return false;
+            lock (contextGate) if ((DateTime.UtcNow - contextAt).TotalSeconds < 4 && ShellPids(false).Contains(Native.ProcessIdOf(fg))) return pageKind != "home";
+            if (HomeTitle(Native.WindowText(fg))) return false;
             return ShellPids(false).Contains(Native.ProcessIdOf(fg));
         }
 
-        /// <summary>Leave the streaming site and return to the BWOS home screen (same window).</summary>
+        /// <summary>Ask the browser adapter to return Home, retaining any active player.</summary>
         public void GoHome()
         {
-            var win = ShellWindow();
+            var win = ShellIsForeground() ? Native.GetForegroundWindow() : ShellWindow();
             if (win == IntPtr.Zero) return;
-            Native.ForceForeground(win);
+            if (Native.GetForegroundWindow() != win) Native.ForceForeground(win);
+            // The page adapter handles F24 directly. Do not follow it with another
+            // shortcut: Edge may leave that shortcut unassigned, or send it to the
+            // newly active Home tab partway through the first handoff.
             Native.Tap(VK_F24);
-            // Browser-level shortcut handled by the extension's background worker: works even when a
-            // page or an embedded ad frame has swallowed the key above.
-            System.Threading.Thread.Sleep(60);
-            Native.Key(0x11, true); Native.Key(0x10, true);   // Ctrl + Shift
-            Native.Tap(0x24);                                  // Home
-            Native.Key(0x10, false); Native.Key(0x11, false);
         }
 
         public void HideShell()
@@ -149,8 +212,11 @@ namespace Bwos
         private IntPtr ShellWindow()
         {
             var wins = Native.TopLevelWindows(ShellPids(true));
+            var home = wins.FirstOrDefault(w => HomeTitle(Native.WindowText(w)));
+            if (home != IntPtr.Zero) return home;
             return wins.Count > 0 ? wins[0] : IntPtr.Zero;
         }
+        private static bool HomeTitle(string title) { return title == ShellTitle || title.StartsWith(ShellTitle + " - ", StringComparison.Ordinal); }
 
         private void StartShell()
         {
@@ -159,12 +225,17 @@ namespace Bwos
             KillProfile(shellProfile); // a stale instance would swallow our command-line flags
             string args = "--user-data-dir=\"" + shellProfile + "\"" +
                 " --no-first-run --no-default-browser-check --disable-sync" +
+                " --enable-logging=stderr" +
                 " --hide-crash-restore-bubble --disable-session-crashed-bubble" +
                 // Chromium only honours the LAST --disable-features switch, so keep them in one.
                 " --disable-features=Translate,msEdgeTranslate,msUndersideButton,msEdgeSidebarV2,EdgeCollections,DisableLoadExtensionCommandLineSwitch" +
-                " --app=\"" + shellUrl + "\"" +
+                // A normal fullscreen browser window supports retained media tabs.
+                // App-mode windows cannot reliably hold multiple tabs and could
+                // create a second visible window when Home was requested.
+                " --new-window \"" + shellUrl + "\"" +
                 " --start-fullscreen" +
                 " --autoplay-policy=no-user-gesture-required" +
+                " --disable-backgrounding-occluded-windows" +
                 " --disable-pinch --overscroll-history-navigation=0";
             string ext = Path.Combine(Paths.AppDir, @"extensions\bwos-tv");
             if (Directory.Exists(ext)) args += " --load-extension=\"" + ext + "\"";
@@ -203,9 +274,18 @@ namespace Bwos
         {
             var psi = new ProcessStartInfo(browserExe, args);
             psi.UseShellExecute = false;
+            psi.RedirectStandardError = true;
             psi.WorkingDirectory = Path.GetDirectoryName(browserExe);
             Log.Write("start browser: " + args.Replace(shellUrl ?? "\u0000", "<shell url>"));
             var p = Process.Start(psi);
+            p.ErrorDataReceived += delegate(object sender, DataReceivedEventArgs e) {
+                if (e.Data == null) return;
+                if (e.Data.IndexOf("Failed to load extension", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    e.Data.IndexOf("Service worker registration failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    (e.Data.Contains("/background.js") && (e.Data.Contains("Uncaught") || e.Data.Contains("BWOS"))))
+                    Log.Write("browser integration: " + System.Text.RegularExpressions.Regex.Replace(e.Data, "[a-f0-9]{32}", "[redacted]", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+            };
+            p.BeginErrorReadLine();
             try { Native.AllowSetForegroundWindow(p.Id); } catch { }
             return p;
         }
@@ -247,7 +327,7 @@ namespace Bwos
         {
             foreach (var pid in FindProfilePids(profile))
             {
-                try { Process.GetProcessById(pid).Kill(); } catch { }
+                try { var process = Process.GetProcessById(pid); process.Kill(); process.WaitForExit(3000); } catch { }
             }
         }
 

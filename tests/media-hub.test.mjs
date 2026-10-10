@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {youtubeId,hubVideos,hubCatalogue,filterVideos} from '../ui/js/media-hub.js';
+for(const link of ['https://www.youtube.com/watch?v=zTSXiF_cxG8','https://youtu.be/zTSXiF_cxG8?t=3','https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8','https://m.youtube.com/shorts/zTSXiF_cxG8']) assert.equal(youtubeId(link),'zTSXiF_cxG8');
+for(const link of ['https://youtube.com.evil.test/watch?v=zTSXiF_cxG8','http://www.youtube.com/watch?v=zTSXiF_cxG8','https://www.youtube.com:8080/watch?v=zTSXiF_cxG8','https://secret@www.youtube.com/watch?v=zTSXiF_cxG8','javascript:alert(1)']) assert.equal(youtubeId(link),null);
+const original={id:'film',title:'गली बॉय',genres:['Drama'],offers:[{app:'netflix',url:'https://netflix.com/title/test'},{app:'prime',url:'https://primevideo.com/test'}]};
+const state={watch:[{id:'netflix'},{id:'prime'},{id:'hidden',hidden:true}],forYou:[{items:[original]},{items:[{...original,offers:[{app:'hidden',url:'https://hidden.test/film'},{app:'prime',url:'https://primevideo.com/test'}]}]}],videos:[{id:'zTSXiF_cxG8',title:'Saved song',url:'https://youtu.be/zTSXiF_cxG8'}],upNext:[{app:'youtube',url:'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8',title:'Recent duplicate'},{app:'youtube',url:'https://www.youtube.com/watch?v=abcdefghijk',title:'Hindi favourites'}]};
+assert.equal(hubCatalogue(state).length,1,'Duplicate recommendations merge into one title');
+assert.deepEqual(hubCatalogue(state,'netflix','गली')[0].offers,[original.offers[0]],'Provider filters never launch the wrong offer');
+assert.equal(original.offers.length,2,'Provider filtering does not mutate the shared catalogue');
+assert.equal(hubCatalogue(state,'hidden').length,0,'Hidden services are excluded');
+assert.equal(hubCatalogue(state,'all','not in cache').length,0,'Missing search results do not invent titles');
+assert.equal(hubVideos(state).length,2,'Saved videos and TV watch history deduplicate by canonical video ID');
+assert.equal(hubVideos(state)[0].title,'Saved song');
+assert.equal(filterVideos(hubVideos(state),'hindi').length,1);
+console.log('PASS: safe canonical video links, shared catalogue deduplication, provider filtering and saved/recent video browsing');

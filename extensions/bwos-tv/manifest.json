@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "BWOS TV",
-  "version": "2.3.0",
-  "description": "Controller navigation for streaming sites inside BWOS, plus a clean, ad-free YouTube TV.",
-  "permissions": ["declarativeNetRequest", "storage"],
-  "host_permissions": ["*://www.youtube.com/*", "http://127.0.0.1/*", "http://localhost/*"],
+  "version": "2.10.0",
+  "description": "Controller navigation and persistent streaming apps inside BWOS, including YouTube TV.",
+  "permissions": ["declarativeNetRequest", "storage", "tabs", "webRequest"],
+  "host_permissions": ["*://www.youtube.com/*", "https://*.googlevideo.com/*", "http://127.0.0.1/*", "http://localhost/*"],
   "background": { "service_worker": "background.js" },
   "commands": {
     "bwos-home": {
@@ -16,6 +16,11 @@
     "rule_resources": [{ "id": "youtube-tv", "enabled": true, "path": "rules.json" }]
   },
   "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*", "https://www.netflix.com/*", "https://www.primevideo.com/*", "https://primevideo.com/*"],
+      "js": ["recommendations.js"],
+      "run_at": "document_idle"
+    },
     {
       "matches": ["http://127.0.0.1/*", "http://localhost/*"],
       "js": ["home.js"],
@@ -41,7 +46,7 @@
     },
     {
       "matches": ["https://*/*"],
-      "js": ["qr.js", "remote.js"],
+      "js": ["qr.js", "remote.js", "voice.js", "media.js"],
       "css": ["remote.css"],
       "run_at": "document_start",
       "all_frames": true

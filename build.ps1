@@ -15,6 +15,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $out = Join-Path $root 'dist\BWOS'
+function Assert-BuildPath([string]$path) {
+    $resolved = [IO.Path]::GetFullPath($path)
+    $allowed = [IO.Path]::GetFullPath((Join-Path $root 'dist')).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw "Build path outside dist: $resolved" }
+}
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if (-not (Test-Path $csc)) { throw ".NET Framework 4.x compiler not found at $csc" }
 
@@ -27,7 +32,8 @@ if (-not (Test-Path "$root\assets\bwos.ico")) { & "$root\tools\make-icon.ps1" }
 
 $sources = Get-ChildItem "$root\src\BWOS.Host\*.cs" | ForEach-Object { $_.FullName }
 $refs = 'System.dll', 'System.Core.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll',
-        'System.Web.Extensions.dll', 'System.Management.dll'
+        'System.Web.Extensions.dll', 'System.Management.dll', 'System.IO.Compression.dll', 'System.IO.Compression.FileSystem.dll'
+$refs += Get-ChildItem (Join-Path $env:WINDIR 'Microsoft.NET\assembly\GAC_MSIL\System.Speech') -Filter System.Speech.dll -Recurse | Select-Object -First 1 -ExpandProperty FullName
 
 Write-Host "Compiling host..." -ForegroundColor Cyan
 & $csc /nologo /target:winexe /platform:anycpu /optimize+ /utf8output `
@@ -41,12 +47,14 @@ if ($LASTEXITCODE -ne 0) { throw "Compilation failed" }
 Write-Host "Copying UI and extensions..." -ForegroundColor Cyan
 foreach ($dir in 'ui', 'extensions') {
     $dest = Join-Path $out $dir
+    Assert-BuildPath $dest
     if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
     Copy-Item (Join-Path $root $dir) $dest -Recurse
 }
 
 # One QR generator for both the BWOS screens and the streaming overlay.
 Copy-Item "$root\extensions\bwos-tv\qr.js" "$out\ui\js\qr.js" -Force
+Copy-Item "$root\THIRD_PARTY_NOTICES.md" $out -Force
 
 Write-Host "Built $out\BWOS.exe" -ForegroundColor Green
 
@@ -56,10 +64,15 @@ if ($Zip) {
     if (Test-Path $zipPath) { Remove-Item $zipPath }
     # Ship without personal data (browser profiles, config, logs).
     $stage = Join-Path $root "dist\.stage-$ver"
+    Assert-BuildPath $stage
     if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
     New-Item -ItemType Directory $stage | Out-Null
     Copy-Item "$out\BWOS.exe", "$out\ui", "$out\extensions" $stage -Recurse
-    Copy-Item "$root\tools\install.ps1", "$root\README.md" $stage
+    Copy-Item "$root\tools\install.ps1", "$root\README.md", "$root\THIRD_PARTY_NOTICES.md" $stage
+    New-Item -ItemType Directory (Join-Path $stage 'docs') | Out-Null
+    Copy-Item "$root\docs\VOICE_AND_DEVICES.md", "$root\docs\QUALITY_PASS.md" (Join-Path $stage 'docs')
+    $releaseNotes = Join-Path $root "docs\RELEASE_$ver.md"
+    if (Test-Path $releaseNotes) { Copy-Item $releaseNotes (Join-Path $stage 'docs') }
     Compress-Archive -Path "$stage\*" -DestinationPath $zipPath
     Remove-Item $stage -Recurse -Force
     Write-Host "Packaged $zipPath" -ForegroundColor Green

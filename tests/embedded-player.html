@@ -1,0 +1,84 @@
+<!doctype html><meta charset="utf-8"><title>BWOS embedded player regression</title>
+<link rel="stylesheet" href="../ui/css/app.css"><div id="results" style="position:fixed;z-index:1000;padding:20px;font-size:18px">Running…</div><aside id="embedded-player" class="embedded-player"></aside>
+<script type="module">
+import {YouTubePlayer} from '../ui/js/youtube-player.js';
+import {focus} from '../ui/js/focus.js';
+import {playbackScope,focusPlayback,leavePlayback} from '../ui/js/playback.js';
+const assert=(condition,message)=>{if(!condition)throw Error(message);};
+const reports=[],instances=[];
+class FakePlayer {
+  constructor(mount,options){this.options=options;this.state=2;this.position=0;this.destroyed=false;this.iframe=document.createElement('iframe');mount.replaceWith(this.iframe);instances.push(this);queueMicrotask(()=>options.events.onReady({target:this}));}
+  getIframe(){return this.iframe;} getPlayerState(){return this.state;} getCurrentTime(){return this.position;} getDuration(){return 120;}
+  playVideo(){this.state=1;} pauseVideo(){this.state=2;} seekTo(value){this.position=value;} destroy(){this.destroyed=true;this.iframe.remove();}
+  cuePlaylist(ids,index,start){this.ids=ids;this.index=index;this.position=start;this.state=5;}
+  loadPlaylist(ids,index,start){this.cuePlaylist(ids,index,start);this.state=1;}
+  getPlaylist(){return this.ids;} getPlaylistIndex(){return this.index;}
+  playVideoAt(index){this.index=index;this.position=0;this.state=1;this.options.events.onStateChange({data:1});}
+}
+const root=document.getElementById('embedded-player');
+const native=new YouTubePlayer(root,{sdk:async()=>({Player:FakePlayer}),report:async data=>reports.push({...data}),progress:async()=>{},openApp:async()=>{}});
+try {
+  await native.play({id:'zTSXiF_cxG8',title:'First video',position:31.8});
+  assert(native.player.options.playerVars.start===31,'Continue watching starts from the saved position');
+  assert(!root.hidden && native.player.state===1,'Visible player starts from one user selection');
+  const fullscreen=root.getBoundingClientRect();
+  assert(fullscreen.x===0 && fullscreen.y===0 && fullscreen.width===innerWidth && fullscreen.height===innerHeight,'Opening a video fills the entire viewport');
+  native.hideControls();assert(root.classList.contains('controls-hidden') && getComputedStyle(native.controls.parentElement).display==='none','Idle controls leave the video unobstructed');
+  assert(await native.handleInput('accept') && native.player.state===2,'A / phone select toggles playback in viewing mode');
+  await native.handleInput('playPause');assert(native.player.state===1,'Explicit phone Play/Pause toggles playback');
+  await native.handleInput('right');assert(native.player.position===10,'Right seeks in viewing mode');
+  await native.handleInput('left');assert(native.player.position===0,'Left seeks back');
+  native.player.state=3;await native.heartbeat();assert(native.status.textContent.startsWith('Buffering'),'Buffering is not mislabeled as paused');
+  await native.control('toggle');assert(native.player.state===2,'Toggle pauses buffering playback');await native.control('resume');
+  const nativeFrame=native.player.iframe.contentWindow;
+  window.dispatchEvent(new MessageEvent('message',{origin:'https://untrusted.example',source:nativeFrame,data:{type:'bwos-native-controls-state',active:true,ok:true}}));
+  assert(!native.controlsMode,'Untrusted frame responses cannot enter menu navigation');
+  const navigation=native.handleInput('up');
+  window.dispatchEvent(new MessageEvent('message',{origin:'https://www.youtube.com',source:nativeFrame,data:{type:'bwos-native-controls-state',active:true,ok:true}}));
+  assert(await navigation && native.controlsMode,'Provider adapter acknowledgement enters native navigation');
+  window.dispatchEvent(new MessageEvent('message',{origin:'https://www.youtube.com',source:nativeFrame,data:{type:'bwos-native-controls-state',active:false,ok:true}}));
+  const bridge=[];
+  native.nativeControl=async action=>{bridge.push(action);native.controlsMode=action!=='back' && action!=='hide';return true;};
+  await native.handleInput('up');assert(native.controlsMode && bridge.at(-1)==='up','Up enters the provider controls instead of a separate BWOS bar');
+  assert(!await native.handleInput('home') && bridge.at(-1)==='up','Home bypasses native menus and remains available to BWOS');
+  const videoBounds=native.slot.getBoundingClientRect();
+  assert(videoBounds.width===innerWidth && videoBounds.height===innerHeight && getComputedStyle(native.controls.parentElement).display==='none','Showing controls preserves the full video viewport and has no separate bar');
+  await native.handleInput('right');assert(bridge.at(-1)==='right' && native.player.position===0,'D-pad navigates native controls without also seeking');
+  await native.handleInput('options');assert(bridge.at(-1)==='settings','Options opens provider playback settings');
+  await native.handleInput('back');assert(!native.controlsMode && !native.docked,'Back first leaves the control bar');
+  native.showControls();
+  assert(native.player.iframe.referrerPolicy==='strict-origin-when-cross-origin','Embedding supplies browser referrer identity');
+  native.heartbeat();
+  assert(getComputedStyle(native.controls.querySelector('[data-action="retry"]')).display==='none','A healthy player hides Retry visually and from controller focus');
+  native.setDocked(true); assert(root.classList.contains('docked') && native.player.state===1,'Home keeps a single visible playing iframe');
+  const shelf=document.createElement('button'); shelf.dataset.focus=''; shelf.textContent='Underlying Home card'; shelf.style.cssText='position:fixed;inset:500px 0 0;'; document.body.append(shelf);
+  focus.setScope(playbackScope); focus.set(shelf); focusPlayback(); focus.move('right');
+  assert(focus.current.dataset.action==='focus','D-pad stays within mini-player controls instead of selecting an overlapping Home card');
+  leavePlayback(); assert(focus.current===shelf,'Back can leave the mini-player control scope'); shelf.remove();
+  await native.control('seekForward','20'); assert(native.player.position===20,'Voice seek uses its requested interval');
+  native.cover(true); assert(native.player.state===2,'A hidden/covered player pauses');
+  native.player.state=3;native.player.options.events.onStateChange({data:3});assert(native.player.state===2,'Late buffering while covered cannot restart playback');
+  let rejected=false;try{await native.control('resume');}catch{rejected=true;}assert(rejected,'A hidden player cannot resume');
+  native.cover(false); await native.control('resume'); assert(native.player.state===1,'Visible paused player can resume');
+  await native.play({id:'M7lc1UVf-VE',title:'Queue first',position:12},[{id:'M7lc1UVf-VE',title:'Queue first'},{id:'jNQXAC9IVRw',title:'Queue next'}]);
+  const queuedPlayer=native.player,queuedFrame=queuedPlayer.iframe;
+  assert(queuedPlayer.ids.length===2 && queuedPlayer.position===12,'Native playlist preserves the selected resume position');
+  await native.control('nextMedia');
+  assert(native.player===queuedPlayer && native.player.iframe===queuedFrame && native.video.id==='jNQXAC9IVRw','Next uses the native queue without recreating the iframe');
+  queuedPlayer.index=0;queuedPlayer.options.events.onStateChange({data:1});
+  assert(native.video.id==='M7lc1UVf-VE' && native.title.textContent==='Queue first','Native queue changes update BWOS metadata');
+  native.setDocked(true);await native.control('nextMedia');assert(native.docked && native.video.id==='jNQXAC9IVRw','Background Next keeps the floating player docked');
+  const first=native.player; await native.play({id:'abcdefghijk',title:'Second video'}); assert(first.destroyed && root.querySelectorAll('iframe').length===1,'A new video replaces rather than duplicates the player');
+  native.player.options.events.onError({data:150}); assert(native.error.includes('must be watched on YouTube'),'Provider embedding refusal has an explicit Open YouTube recovery');
+  assert(getComputedStyle(native.slot).display==='none' && getComputedStyle(native.controls.parentElement).display!=='none','Error recovery replaces the failed video instead of covering it');
+  assert(native.controls.querySelector('[data-action="toggle"]').disabled,'Failed player does not promise Play');
+  const failed=native.player;failed.options.events.onReady({target:failed});
+  assert(failed.destroyed && !native.player && !native.ready,'Late readiness after failure cannot start a hidden ghost player');
+  await native.close(); assert(root.hidden && reports.at(-1).ended,'Closing expires the local player after its pending report');
+  let release; native.sdk=()=>new Promise(resolve=>{release=resolve;});
+  const pending=native.play({id:'zTSXiF_cxG8',title:'Cancelled setup'}); await native.close(); release({Player:FakePlayer}); await pending;
+  assert(root.hidden && root.querySelectorAll('iframe').length===0,'Closing during setup prevents a late ghost player');
+  clearInterval(native.timer);
+  document.getElementById('results').textContent='PASS: full-size playback, native queue without iframe replacement, metadata changes, menu bridge, docked Next, hidden pause and late-ready recovery.';
+}catch(error){clearInterval(native.timer);document.getElementById('results').textContent='FAIL: '+error.message;}
+</script>

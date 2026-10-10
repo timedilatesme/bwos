@@ -12,7 +12,7 @@ namespace Bwos
     /// <summary>Wires the services together and implements the HTTP API used by the UI.</summary>
     internal sealed class App
     {
-        public const string Version = "1.0.0";
+        public const string Version = "1.8.0";
         /// <summary>How this PC appears in phones' cast and AirPlay menus.</summary>
         public static readonly string CastName = "BWOS (" + Environment.MachineName + ")";
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -28,6 +28,13 @@ namespace Bwos
         public readonly PhoneRemote Remote;
         public readonly CastReceiver Cast;
         public readonly AirPlayReceiver AirPlay;
+        public readonly VoiceService Voice;
+        public readonly Devices Devices;
+        public readonly PlaybackService Playback;
+        public readonly VideoLibrary Videos;
+        public readonly RecommendationFeeds Recommendations;
+        private readonly Queue<VoiceCommand> voiceDispatch = new Queue<VoiceCommand>();
+        private bool voiceDispatching;
         private string pendingCast;          // YouTube URL a phone cast, waiting for the BWOS screen to open it
         private DateTime pendingCastAt;
         private readonly InputBridge bridge;
@@ -63,6 +70,25 @@ namespace Bwos
             Tracker.Changed += delegate { Server.Broadcast("upnext", null); };
 
             Remote = new PhoneRemote(Shell, Config.Port + 1);
+            Remote.MediaControl = delegate(string action)
+            {
+                var candidates = Playback.Describe() as Dictionary<string, object>[];
+                var player = candidates.FirstOrDefault(p => !Json.Bool(p, "background", false)) ?? candidates.FirstOrDefault();
+                if (player == null) return "Start a video in BWOS first.";
+                if (!Json.Bool(player, "canControl", true)) return "Wait for the player to load, or use Retry if playback failed.";
+                var result = Playback.Control(Json.Str(player, "id", ""), action, "10") as Dictionary<string, object>;
+                return Json.Bool(result, "ok", false) ? null : Json.Str(result, "error", "Player could not respond.");
+            };
+            Devices = new Devices();
+            Playback = new PlaybackService();
+            Videos = new VideoLibrary();
+            Recommendations = new RecommendationFeeds();
+            Recommendations.Changed += delegate { Server.Broadcast("foryou", null); };
+            Playback.Changed += delegate { Server.Broadcast("playback", null); };
+            Devices.Changed += delegate { Server.Broadcast("devices", null); };
+            Voice = new VoiceService(Config, Shell.ShellIsForeground);
+            Voice.Changed += delegate { Server.Broadcast("voice", null); };
+            Voice.Command += EnqueueVoice;
             Remote.HomePressed += delegate { OnTrigger("phone remote"); };
             Remote.Paired += delegate { Server.Broadcast("phone", null); };
             Cast = new CastReceiver(Config.Port + 2, () => Config.CastEnabled);
@@ -107,11 +133,14 @@ namespace Bwos
         public void Start()
         {
             Shell.CloseStaleShell();
+            Shell.RefreshAdapterCache();
             Server.Start();
             if (Gamepad != null) Gamepad.Start();
             Cast.Start();
             AirPlay.Start();
             Remote.StartIfPaired();
+            Devices.Start();
+            Voice.Start();
             if (!AirPlay.Installed) Log.Write("airplay: UxPlay not installed (see README → AirPlay)");
             Log.Write("BWOS " + Version + " listening on " + Server.BaseUrl + " (guide button " +
                 (Gamepad != null && Gamepad.GuideSupported ? "supported" : "NOT supported") + ")");
@@ -122,6 +151,8 @@ namespace Bwos
             if (Gamepad != null) Gamepad.Stop();
             Cast.Shutdown();
             AirPlay.Stop();
+            Devices.Stop();
+            Voice.Stop();
             Server.Stop();
         }
 
@@ -140,7 +171,7 @@ namespace Bwos
                 {
                     // Watching something inside BWOS: home leaves the service for the BWOS home screen.
                     Shell.GoHome();
-                    Log.Write("trigger (" + source + "): left streaming service -> BWOS home");
+                    Log.Write("trigger (" + source + "): requested streaming service -> BWOS home");
                     return;
                 }
                 if (Shell.ShellIsForeground())
@@ -251,6 +282,97 @@ namespace Bwos
             }
         }
 
+        private void EnqueueVoice(VoiceCommand command)
+        {
+            lock (voiceDispatch)
+            {
+                // Do not build an unbounded backlog while a launcher takes foreground time.
+                if (voiceDispatch.Count >= 8) return;
+                voiceDispatch.Enqueue(command);
+                if (voiceDispatching) return;
+                voiceDispatching = true;
+            }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                while (true)
+                {
+                    VoiceCommand next;
+                    lock (voiceDispatch)
+                    {
+                        if (voiceDispatch.Count == 0) { voiceDispatching = false; return; }
+                        next = voiceDispatch.Dequeue();
+                    }
+                    try { DispatchVoice(next); } catch (Exception ex) { Log.Write("voice action: " + ex.Message); }
+                }
+            });
+        }
+
+        private void DispatchVoice(VoiceCommand command)
+        {
+            if (!Config.VoiceEnabled) return;
+            // Direct mode never injects into a game or another desktop app, including after a focus change.
+            if (Config.VoiceMode == "direct" && !Shell.ShellIsForeground()) return;
+            Voice.Activate();
+            if (command.Action == "showAssistant") { Voice.Reply("I'm listening."); return; }
+            if ((command.Action == "youtubeSearch" && Shell.YouTubeIsForeground()) || (command.Action == "search" && Shell.ServiceIsForeground()))
+            {
+                Voice.Reply("Searching for " + command.Value.Substring(0, Math.Min(140, command.Value.Length)) + ".");
+                Voice.Queue(command, true); return;
+            }
+            if (command.Action == "resumeGame") { Games.Resume(); return; }
+            if (command.Action == "home")
+            {
+                Voice.Reply("Going home.");
+                if (Shell.ServiceIsForeground()) Shell.GoHome();
+                else { if (!Shell.ShellIsForeground()) Shell.ShowShell(); Server.Broadcast("home", null); }
+                return;
+            }
+            if (Array.IndexOf(new[] { "volup", "voldown", "mute", "unmute", "volumeSet", "volumeChange" }, command.Action) >= 0)
+            {
+                try { Voice.Reply(AudioVolume.Apply(command.Action, command.Value)); }
+                catch (Exception ex) { Voice.ShowFeedback("Could not change volume: " + ex.Message); }
+                return;
+            }
+            if (command.Action == "keyboard")
+            {
+                if (Shell.ServiceIsForeground()) Voice.Queue(command, true);
+                else { if (!Shell.ShellIsForeground()) Shell.ShowShell(); Voice.Queue(command, false); }
+                return;
+            }
+            var mediaActions = new Dictionary<string, string> { { "pause", "pause" }, { "resume", "resume" }, { "togglePlayback", "toggle" }, { "stopPlayback", "stop" }, { "reopenPlayer", "focus" }, { "restartMedia", "restart" }, { "seekForward", "seekForward" }, { "seekBack", "seekBack" }, { "nextMedia", "nextMedia" }, { "previousMedia", "previousMedia" }, { "subtitlesOn", "subtitlesOn" }, { "subtitlesOff", "subtitlesOff" } };
+            string mediaAction;
+            if (mediaActions.TryGetValue(command.Action, out mediaAction))
+            {
+                if (mediaAction == "focus" && Shell.ServiceIsForeground()) { Voice.ShowFeedback("Player is already open."); return; }
+                if (Shell.ServiceIsForeground()) { command.Action = mediaAction; Voice.Queue(command, true); }
+                else
+                {
+                    var player = (Playback.Describe() as Dictionary<string, object>[]).FirstOrDefault();
+                    if (player != null)
+                    {
+                        if (Json.Bool(player, "local", false) && (mediaAction == "focus" || mediaAction == "resume") && !Shell.ShellIsForeground()) Shell.ShowShell();
+                        Playback.Control(Json.Str(player, "id", ""), mediaAction, command.Value);
+                    }
+                    else if (command.Action == "resume" && Games.RunningKey != null) Games.Resume();
+                    else Voice.ShowFeedback("Start media in a streaming app first.");
+                }
+                return;
+            }
+            if (command.Action == "open" || command.Action == "browseService" || command.Action == "openServiceApp" || command.Action == "search" || command.Action == "help" || command.Action == "youtubeSearch" || command.Action == "playerControls")
+            {
+                if (Shell.ServiceIsForeground()) Shell.GoHome();
+                else if (!Shell.ShellIsForeground()) Shell.ShowShell();
+            }
+            if (!Shell.ShellIsForeground()) return;
+            if (Shell.ServiceIsForeground() && Array.IndexOf(new[] { "up", "down", "left", "right", "accept", "back" }, command.Action) >= 0)
+            {
+                Remote.Press(command.Action == "accept" ? "ok" : command.Action);
+                return;
+            }
+            bool homeCommand = command.Action == "open" || command.Action == "browseService" || command.Action == "openServiceApp" || command.Action == "search" || command.Action == "help" || command.Action == "youtubeSearch" || command.Action == "playerControls";
+            Voice.Queue(command, !homeCommand && Shell.ServiceIsForeground());
+        }
+
         // ------------------------------------------------------------------ API
 
         private object HandleApi(Request r)
@@ -263,6 +385,9 @@ namespace Bwos
                 switch (route)
                 {
                     case "state": return State();
+                    case "devices": return Devices.Describe();
+                    case "voice": return Voice.Describe();
+                    case "playback": return sub == "diagnostics" ? Playback.Diagnostics() : Playback.Describe();
                     case "art": return Art(sub, r.Segments.Length > 3 ? r.Segments[3] : "portrait");
                     case "avatar":
                         var u = Library.User;
@@ -274,6 +399,60 @@ namespace Bwos
             var b = r.Body;
             switch (route)
             {
+                case "stream":
+                    if (sub == "start") return Remote.StartScreen();
+                    return Remote.Screen.Exchange(true, Json.Str(b, "session", ""), sub, b);
+                case "browser":
+                    if (sub == "ping") { Shell.IntegrationPing(); return Ok(); }
+                    if (sub == "error") { Voice.ShowFeedback(Json.Str(b, "message", "Browser integration needs attention")); return Ok(); }
+                    if (sub == "context")
+                    {
+                        string kind = Json.Str(b, "kind", "");
+                        if (kind != "home" && kind != "youtube" && kind != "service") return WebServer.Err("Unknown browser context");
+                        Shell.ReportContext(kind, Json.Bool(b, "foreground", false)); return Ok();
+                    }
+                    break;
+                case "playback":
+                    if (sub == "local-report") { b["id"] = "0"; b["local"] = true; Playback.Report(b); return Ok(); }
+                    if (sub == "local-claim") return Playback.Claim(true);
+                    if (sub == "diagnostic") { Playback.Diagnostic(b); return Ok(); }
+                    if (sub == "error") { Playback.Error(Json.Str(b, "id", ""), Json.Str(b, "error", "")); return Ok(); }
+                    if (sub == "report") { Playback.Report(b); return Ok(); }
+                    if (sub == "claim") return Playback.Claim();
+                    if (sub == "control") return Playback.Control(Json.Str(b, "id", ""), Json.Str(b, "action", ""), Json.Str(b, "value", ""));
+                    break;
+                case "videos":
+                    if (sub == "add") return Videos.Add(Json.Str(b, "url", ""));
+                    if (sub == "remove") return Videos.Remove(Json.Str(b, "id", ""));
+                    break;
+                case "recommendations":
+                    if (sub == "report") return Recommendations.Report(b);
+                    if (sub == "preview") return Recommendations.Preview(b);
+                    if (sub == "status") return Recommendations.Status(b);
+                    break;
+                case "devices":
+                    if (sub == "refresh") { ThreadPool.QueueUserWorkItem(delegate { Devices.Refresh(); }); return Ok(); }
+                    if (sub == "settings") return Bwos.Devices.OpenSettings(Json.Str(b, "kind", "bluetooth"));
+                    if (sub == "connect" || sub == "disconnect") return Devices.Connect(Json.Str(b, "id", ""), sub == "connect");
+                    break;
+                case "voice":
+                    if (sub == "install") { Voice.Install(); return Ok(); }
+                    if (sub == "reply") { string reply = Json.Str(b, "text", ""); if (reply.Length > 200) return WebServer.Err("Reply too long"); Voice.Reply(reply); return Ok(); }
+                    if (sub == "claim" || sub == "service")
+                    {
+                        bool service = Shell.ServiceIsForeground();
+                        if (!Shell.ShellIsForeground() || (sub == "service" ? !service : service))
+                            return new Dictionary<string, object> { { "commands", new object[0] } };
+                        return Voice.Claim(sub == "service");
+                    }
+                    if (sub == "type")
+                    {
+                        string text = Json.Str(b, "text", "");
+                        if (!Shell.ServiceIsForeground() || text.Length > 300) return WebServer.Err("Select a search box inside BWOS first");
+                        string error = Remote.Type(text, "enter");
+                        return error == null ? Ok() : WebServer.Err(error);
+                    }
+                    break;
                 case "launch":
                 {
                     var g = Library.Find(Json.Str(b, "key", ""));
@@ -359,6 +538,13 @@ namespace Bwos
             d["running"] = running;
             d["forYou"] = Catalog.Rows;
             d["upNext"] = Tracker.UpNext();
+            d["devices"] = Devices.Describe();
+            d["voice"] = Voice.Describe();
+            d["playback"] = Playback.Describe();
+            d["videos"] = Videos.Describe();
+            d["recommendations"] = Recommendations.Describe();
+            d["browserIntegration"] = Shell.IntegrationStatus();
+            d["playbackConnections"] = Server.PlaybackClients;
             d["controllers"] = Gamepad != null ? Gamepad.Describe() : new List<Dictionary<string, object>>();
 
             // The name shown in the top bar: your own choice, else your Steam profile name.
@@ -373,6 +559,12 @@ namespace Bwos
 
             var s = new Dictionary<string, object>();
             s["trigger"] = Config.Trigger;
+            s["voiceEnabled"] = Config.VoiceEnabled;
+            s["voiceLanguage"] = Config.VoiceLanguage;
+            s["voiceMode"] = Config.VoiceMode;
+            s["voiceMicrophone"] = Config.VoiceMicrophone;
+            s["voiceEngine"] = Config.VoiceEngine;
+            s["voiceReplies"] = Config.VoiceReplies;
             s["controllerBridge"] = Config.ControllerBridge;
             s["showTools"] = Config.ShowTools;
             s["autostart"] = Autostart;
@@ -417,6 +609,25 @@ namespace Bwos
         {
             switch (key)
             {
+                case "voiceEnabled":
+                    if (!(value is bool)) return WebServer.Err("bad voice toggle");
+                    Config.Set(key, value); Voice.Refresh();
+                    if ((bool)value) Voice.Install(); return Ok();
+                case "voiceReplies":
+                    if (!(value is bool)) return WebServer.Err("bad voice replies toggle");
+                    Config.Set(key, value); return Ok();
+                case "voiceEngine":
+                    if (Convert.ToString(value) != "whisper" && Convert.ToString(value) != "vosk") return WebServer.Err("bad voice engine");
+                    Config.Set(key, value); Voice.Refresh(); if (Config.VoiceEnabled) Voice.Install(); return Ok();
+                case "voiceLanguage":
+                case "voiceMode":
+                    string voiceValue = Convert.ToString(value);
+                    if (key == "voiceLanguage" ? voiceValue != "auto" && voiceValue != "en" && voiceValue != "en-in" && voiceValue != "hi" : voiceValue != "direct" && voiceValue != "wake" && voiceValue != "everywhere") return WebServer.Err("bad voice option");
+                    Config.Set(key, voiceValue); Voice.Refresh(); return Ok();
+                case "voiceMicrophone":
+                    int mic;
+                    if (!int.TryParse(Convert.ToString(value), out mic) || (mic != -1 && !Microphone.Devices().Any(x => Json.Int(x, "id", -2) == mic))) return WebServer.Err("Microphone not found");
+                    Config.Set(key, mic); Voice.Refresh(); return Ok();
                 case "trigger":
                     string t = Convert.ToString(value);
                     if (t != "guide" && t != "back+start" && t != "hold-back") return WebServer.Err("bad trigger");

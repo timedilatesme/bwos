@@ -38,10 +38,27 @@ namespace Bwos
         private TcpListener listener;
         private string code;
         private DateTime codeIssued;
+        internal readonly ScreenStream Screen = new ScreenStream();
+
+        internal Dictionary<string, object> StartScreen()
+        {
+            lock (gate)
+            {
+                string ip = LanAddress();
+                if (ip == null) return WebServer.Err("Connect this PC to your local network first.");
+                EnsureListening();
+                return Screen.Start("http://" + ip + ":" + port);
+            }
+        }
 
         public event Action<string> Typed;   // "text", "enter", … (the UI shows a hint)
         public event Action HomePressed;     // the phone's Home button
         public event Action Paired;
+        public Func<string, string> MediaControl;
+        internal static string PlaybackAction(string action)
+        {
+            return action == "play" ? "toggle" : action == "seekback" ? "seekBack" : action == "seekforward" ? "seekForward" : null;
+        }
 
         public PhoneRemote(ShellManager shell, int port)
         {
@@ -85,8 +102,10 @@ namespace Bwos
         {
             if (listener != null) return;
             // All interfaces, so a phone on the same Wi-Fi can connect. Windows may ask once to allow BWOS.
-            listener = new TcpListener(IPAddress.Any, port);
-            listener.Start();
+            var pendingListener = new TcpListener(IPAddress.Any, port);
+            try { pendingListener.Start(); }
+            catch { pendingListener.Stop(); throw; }
+            listener = pendingListener; // A failed bind must remain retryable.
             var t = new Thread(AcceptLoop);
             t.IsBackground = true;
             t.Name = "BWOS phone remote";
@@ -104,7 +123,7 @@ namespace Bwos
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try { Serve(client); }
-                    catch (Exception ex) { Log.Write("phone remote: " + ex.Message); }
+                    catch { Log.Write("phone remote: request failed"); } // Request bodies can contain pairing credentials.
                     finally { client.Close(); }
                 });
             }
@@ -116,29 +135,61 @@ namespace Bwos
         {
             client.ReceiveTimeout = 5000;
             var stream = client.GetStream();
-            var reader = new StreamReader(stream, Encoding.UTF8, false, 8192, true);
+            // HTTP Content-Length counts bytes, not UTF-8 characters. Reading
+            // characters made Hindi keyboard requests wait until they timed out.
+            var headerBytes = new List<byte>(); int next;
+            while ((next = stream.ReadByte()) >= 0)
+            {
+                headerBytes.Add((byte)next);
+                int n = headerBytes.Count;
+                if (n > 16384) { Respond(stream, 413, "text/plain", "Request too large"); return; }
+                if (n >= 4 && headerBytes[n-4] == 13 && headerBytes[n-3] == 10 && headerBytes[n-2] == 13 && headerBytes[n-1] == 10) break;
+            }
+            var reader = new StringReader(Encoding.ASCII.GetString(headerBytes.ToArray()));
             string requestLine = reader.ReadLine();
             if (string.IsNullOrEmpty(requestLine)) return;
             var parts = requestLine.Split(' ');
             if (parts.Length < 2) return;
             string method = parts[0], path = parts[1].Split('?')[0];
             int length = 0;
-            string token = null, line;
+            bool invalidLength = false, chunked = false;
+            string token = null, line, host = "", origin = null;
             while (!string.IsNullOrEmpty(line = reader.ReadLine()))
             {
                 int i = line.IndexOf(':');
                 if (i <= 0) continue;
                 string name = line.Substring(0, i).Trim(), value = line.Substring(i + 1).Trim();
-                if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) int.TryParse(value, out length);
+                if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) { int parsed; if (!int.TryParse(value, out parsed) || length != 0) invalidLength = true; else length = parsed; }
+                else if (name.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase)) chunked = true;
                 else if (name.Equals("X-BWOS-Remote", StringComparison.OrdinalIgnoreCase)) token = value;
+                else if (name.Equals("Host", StringComparison.OrdinalIgnoreCase)) host = value;
+                else if (name.Equals("Origin", StringComparison.OrdinalIgnoreCase)) origin = value;
             }
+            IPAddress addressed;
+            string hostAddress = host.EndsWith(":" + port, StringComparison.Ordinal) ? host.Substring(0, host.Length - (":" + port).Length) : "";
+            bool localHost = IPAddress.TryParse(hostAddress, out addressed) && (IPAddress.IsLoopback(addressed) || NetworkInterface.GetAllNetworkInterfaces().Any(n => n.GetIPProperties().UnicastAddresses.Any(a => a.Address.Equals(addressed))));
+            bool forbidden = !localHost || (origin != null && origin != "http://" + host);
+            if (invalidLength || chunked || length < 0 || length >= 64 * 1024) { Respond(stream, 413, "text/plain", "Invalid request size"); return; }
             string body = "";
             if (length > 0 && length < 64 * 1024)
             {
-                var buf = new char[length];
+                var buf = new byte[length];
                 int read = 0;
-                while (read < length) { int n = reader.Read(buf, read, length - read); if (n <= 0) break; read += n; }
-                body = new string(buf, 0, read);
+                while (read < length) { int n = stream.Read(buf, read, length - read); if (n <= 0) break; read += n; }
+                if (read != length) return;
+                body = Encoding.UTF8.GetString(buf);
+            }
+            // Consume a bounded body before closing a rejected request. Closing
+            // with unread data sent a TCP reset and hid the useful 403 response.
+            if (forbidden) { Json403(stream, "Use the BWOS local-network address."); return; }
+
+            if (method == "GET" && path == "/view")
+            {
+                Respond(stream, 200, "text/html; charset=utf-8", File.ReadAllText(Path.Combine(Paths.AppDir, "ui", "remote-viewer.html"))); return;
+            }
+            if (method == "GET" && (path == "/viewer.js" || path == "/rtc.js"))
+            {
+                Respond(stream, 200, "text/javascript; charset=utf-8", File.ReadAllText(Path.Combine(Paths.UiDir, "js", path == "/viewer.js" ? "screen-viewer.js" : "screen-peer.js"))); return;
             }
 
             // The page: /r (paired phones, bookmarkable) or /k/<code> (just scanned).
@@ -155,6 +206,19 @@ namespace Bwos
             if (method != "POST") { Respond(stream, 404, "text/plain", "Not found"); return; }
 
             var req = Json.ParseObject(body);
+            if (path.StartsWith("/v/", StringComparison.Ordinal))
+            {
+                Dictionary<string, object> result;
+                if (path == "/v/pair") result = Screen.Pair(Json.Str(req, "code", ""));
+                else if (!Screen.ViewerAuthorized(token)) result = WebServer.Err("Sharing has stopped or this device is not paired.");
+                else if (path == "/v/key" || path == "/v/type")
+                {
+                    string inputError = path == "/v/key" ? Press(Json.Str(req, "action", "")) : Type(Json.Str(req, "text", ""), Json.Str(req, "action", ""));
+                    result = inputError == null ? new Dictionary<string, object> { { "ok", true } } : WebServer.Err(inputError);
+                }
+                else result = Screen.Exchange(false, token, path.Substring(3), req);
+                RespondJson(stream, Json.Bool(result, "ok", false) ? 200 : 403, result); return;
+            }
             if (path == "/r/pair")
             {
                 string t = Pair(Json.Str(req, "code", ""), Json.Str(req, "name", "Phone"));
@@ -262,7 +326,7 @@ namespace Bwos
             VK_RIGHT = 0x27, VK_DOWN = 0x28, VK_F = 0x46, VK_O = 0x4F, VK_X = 0x58, VK_VOLUME_DOWN = 0xAE, VK_VOLUME_UP = 0xAF;
 
         /// <summary>Returns null on success, or a message for the phone.</summary>
-        private string Press(string action)
+        internal string Press(string action)
         {
             switch (action)
             {
@@ -274,6 +338,8 @@ namespace Bwos
                 case "voldown": Native.Tap(VK_VOLUME_DOWN); return null;
             }
             if (!shell.ShellIsForeground()) return "BWOS isn't on the TV right now. Press Home.";
+            string mediaAction = PlaybackAction(action);
+            if (mediaAction != null && MediaControl != null) return MediaControl(mediaAction);
             // The same keys the controller sends: BWOS's own screens, or the streaming app inside BWOS.
             bool app = shell.ServiceIsForeground();
             switch (action)
@@ -284,7 +350,7 @@ namespace Bwos
                 case "right": Native.Tap(VK_RIGHT); break;
                 case "ok": Native.Tap(VK_RETURN); break;
                 case "back": Native.Tap(VK_ESCAPE); break;
-                case "play": Native.Tap(app ? VK_SPACE : VK_X); break;       // play / pause
+                case "play": Native.Tap(app ? VK_SPACE : (ushort)0x50); break; // semantic P key on BWOS, not focus-player X
                 case "options": Native.Tap(app ? VK_F : VK_O); break;        // full screen in apps, Options in BWOS
                 default: return "Unknown button";
             }
@@ -292,7 +358,7 @@ namespace Bwos
         }
 
         /// <summary>Returns null on success, or a message for the phone.</summary>
-        private string Type(string text, string action)
+        internal string Type(string text, string action)
         {
             if (!shell.ShellIsForeground()) return "BWOS isn't on the TV right now.";
             if (text.Length > 0)
@@ -427,6 +493,10 @@ label{display:flex;gap:10px;align-items:center;margin:12px 2px 0;color:#c9ccd6;f
   <button class=k data-k=back><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d='M15 5l-7 7 7 7'/></svg>Back</button>
   <button class='k home' data-k=home><svg viewBox='0 0 24 24' fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d='M4 11l8-7 8 7v8a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1z'/></svg>Home</button>
   <button class=k data-k=play><svg viewBox='0 0 24 24' fill=currentColor><path d='M5 5.5v13l8-6.5z'/><rect x='15' y='5.5' width='2.2' height='13' rx='1'/><rect x='19' y='5.5' width='2.2' height='13' rx='1'/></svg>Play / pause</button>
+ </div>
+ <div class='row small'>
+  <button class=k data-k=seekback>&minus;10 s</button>
+  <button class=k data-k=seekforward>+10 s</button>
  </div>
  <div class='row small'>
   <button class=k data-k=options>Options</button>

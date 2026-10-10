@@ -1,0 +1,17 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>BWOS streaming lifecycle test</title><style>body{font:18px system-ui;background:#101722;color:#edf3ff;padding:24px}button{font:inherit;padding:12px}canvas{width:640px;max-width:100%}a{color:#adceff}</style>
+<h1>BWOS sender lifecycle test</h1><p>Production streaming module with generated screen/audio. No screen or microphone recording.</p>
+<button id="start">Start generated stream</button><button id="stop">Stop stream</button><p id="status">Ready</p><a id="viewer" hidden>Open viewer</a><p id="controls"></p><canvas width="640" height="360"></canvas>
+<script type="module">
+import {ScreenSharing} from '../ui/js/screen-stream.js';
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');let audio,timer,source;
+Object.defineProperty(navigator.mediaDevices,'getDisplayMedia',{value:async()=>{
+  audio=new AudioContext();await audio.resume();const oscillator=audio.createOscillator(),gain=audio.createGain(),destination=audio.createMediaStreamDestination();gain.gain.value=.03;oscillator.connect(gain).connect(destination);oscillator.start();
+  let frame=0;timer=setInterval(()=>{ctx.fillStyle=frame++%2?'#245584':'#317c64';ctx.fillRect(0,0,640,360);ctx.font='32px system-ui';ctx.fillStyle='#fff';ctx.fillText('BWOS · generated frame '+frame,40,180);},60);
+  source=canvas.captureStream(15);source.addTrack(destination.stream.getAudioTracks()[0]);return source;
+}});
+const sharing=new ScreenSharing(state=>{document.querySelector('#status').textContent=state.active?state.state+' · '+(state.audio?'audio':'no audio'):'Stopped'+(state.error?' · '+state.error:'');});
+document.querySelector('#start').onclick=async()=>{try{const session=await sharing.start();const link=document.querySelector('#viewer');link.href=session.url;link.hidden=false;}catch(error){document.querySelector('#status').textContent=error.message;}};
+document.querySelector('#stop').onclick=async()=>{await sharing.stop();clearInterval(timer);await audio?.close();document.querySelector('#status').dataset.stopped=String(source.getTracks().every(track=>track.readyState==='ended'));document.querySelector('#viewer').hidden=true;};
+setInterval(async()=>{const state=await fetch('/test/stream').then(response=>response.json());document.querySelector('#controls').textContent='Remote controls received: '+state.keys.join(', ');},500);
+addEventListener('pagehide',()=>{sharing.stop();clearInterval(timer);audio?.close();});
+</script></html>
