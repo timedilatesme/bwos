@@ -26,12 +26,16 @@ $defines=if($Primary){'/define:BWOS_PRIMARY'}else{'/define:BWOS_NEXT'}
 try {
   & $compiler /nologo /target:winexe /platform:anycpu /optimize+ /utf8output $defines "/out:$stage\$exeName" "/win32icon:$repo\assets\bwos.ico" "/win32manifest:$repo\src\BWOS.Host\app.manifest" ($refs | ForEach-Object {"/reference:$_"}) $source
   if($LASTEXITCODE -ne 0){throw 'Replacement compilation failed'}
-  Copy-Item "$repo\ui\js\api.js","$repo\ui\js\screen-stream.js","$repo\ui\js\screen-peer.js" "$stage\ui\js" -Force
-  Copy-Item "$repo\ui\remote-viewer.html" "$stage\ui" -Force
-  Copy-Item "$repo\ui\logos" "$stage\ui" -Recurse
+  # Keep the established Liquid Glass UI and controller/focus engine intact.
+  Copy-Item "$repo\ui\*" "$stage\ui" -Recurse -Force
   Copy-Item "$repo\extensions\bwos-tv\*.js","$repo\extensions\bwos-tv\*.css","$repo\extensions\bwos-tv\rules.json" "$stage\extensions\bwos-tv" -Force
   Copy-Item "$repo\extensions\bwos-tv\qr.js" "$stage\ui\js" -Force
-  Copy-Item "$PSScriptRoot\ui\*" "$stage\ui" -Recurse -Force
+  Copy-Item "$PSScriptRoot\ui\js\core-compat.js","$PSScriptRoot\ui\js\screen-viewer.js" "$stage\ui\js" -Force
+  $index=Join-Path $stage 'ui\index.html'
+  $text=Get-Content -LiteralPath $index -Raw
+  $text=$text.Replace('<script type="module" src="js/app.js"></script>','<script type="module" src="js/core-compat.js"></script>' + "`n" + '  <script type="module" src="js/app.js"></script>')
+  if(-not $Primary){$text=$text.Replace('<title>BWOS</title>','<title>BWOS Next</title>')}
+  $text | Set-Content -LiteralPath $index -Encoding UTF8
   Copy-Item "$PSScriptRoot\extension\*" "$stage\extensions\bwos-tv" -Recurse -Force
   Copy-Item "$PSScriptRoot\core\kernel.js" "$stage\extensions\bwos-tv" -Force
   if($Primary){

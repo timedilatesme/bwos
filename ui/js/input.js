@@ -18,6 +18,11 @@ try { swapAB = localStorage.getItem('bwos.swapAB') === '1'; } catch {}
 
 export const input = {
   on(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+  // Phone input uses the same semantic listeners and focus engine as the controller.
+  async dispatch(action, source = 'remote') {
+    lastAny = performance.now();
+    await Promise.all(Array.from(listeners, fn => fn(action, source)));
+  },
   get family() { return family; },
   get idleMs() { return performance.now() - lastAny; },
   get swapAB() { return swapAB; },

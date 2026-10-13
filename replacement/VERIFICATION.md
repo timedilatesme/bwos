@@ -1,3 +1,19 @@
+# Withdrawal and repair — October 13, 2026
+
+BWOS 2.0.0 is unpublished (draft). GitHub main was restored by normal revert commits to exactly the tree at 6f6d4b9 (1.8.0), verified with git diff and the remote main hash. The local default payload was restored from its 1.8.1 backup without replacing data or changing its startup path. The repair branch is local only.
+
+The replacement preview now copies the established UI in full. Liquid Glass CSS and the focus engine match the preserved source byte for byte. The discarded flat shell is removed. A small compatibility module connects acknowledged native/playback operations and phone navigation/text to the original API, semantic input listeners and focus.current. Root build.ps1 builds the established app again; replacement/build.ps1 builds the separate preview by default.
+
+Validation of the repair:
+- Preview compilation and 21 host assertions passed.
+- All 29 JavaScript tests and 207 existing host assertions passed.
+- Isolated headless Edge with simulated gamepads passed: initial focus, A activation while native focus is on body, B return, D-pad/stick shelf movement, bumper tab switching, held-button edges, Steam duplicate suppression, Nintendo confirm swap, PlayStation glyph selection, generic DirectInput POV, six screen layouts and Unicode phone editing.
+- Delayed launch acknowledgement exposed a Back/overlay race in the preserved UI. The fix checks the original launch attempt before attaching its timer; a deterministic delayed-response fixture confirms dismissal remains safe.
+- Generated fixture screenshots were visually inspected. They are not live provider or controller evidence.
+
+The repaired preview has not been promoted or published. Real controller behavior, provider Home/reopen/audio journeys, microphone recognition and real phone/viewer sessions still need testing. The earlier report below is historical evidence for the withdrawn build, not approval of the repaired preview.
+
+---
 # BWOS 2.0 verification — October 13, 2026
 
 ## Passed

@@ -1293,9 +1293,17 @@ async function startGame(g) {
     sub: 'Starting via ' + (SOURCE_LABEL[g.source] || 'PC') + '…',
     tip: [h('div.hint', null, 'Press the controller’s home button any time to come back here')]
   });
-  await api.launch(g.key);
-  launching.timer = setTimeout(() => {
-    if (!launching) return;
+  const attempt = launching;
+  try { await api.launch(g.key); }
+  catch (error) {
+    if (launching === attempt) hideLaunch();
+    sound.error(); toast(error.message, 'alert', true);
+    return;
+  }
+  // Back/Home may dismiss the overlay while the host acknowledges the launch.
+  if (launching !== attempt) return;
+  attempt.timer = setTimeout(() => {
+    if (launching !== attempt) return;
     hideLaunch();
     toast(`${g.name} is taking a while to start`, 'info');
   }, 60000);

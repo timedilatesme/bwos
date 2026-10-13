@@ -1,14 +1,14 @@
-# BWOS 2.0 — architecture and migration
+# BWOS Next — local preview
 
-BWOS Next replaces the shell UI, session ownership, and action dispatch core. It reuses the existing Windows/provider adapters behind those boundaries. The rebuilt core is the default BWOS 2.0 application. The provider and hardware verification limits below remain explicit.
+BWOS Next keeps the established Liquid Glass interface, controller input engine and shelf focus behavior, while replacing session ownership and action dispatch. It reuses the existing Windows/provider adapters behind those boundaries. The 2.0.0 release has been withdrawn; this candidate is for local testing only.
 
-Run `dist\BWOS\BWOS.exe`, built by `build.ps1`. The original data/profile folder and 47913/47914 endpoints stay in place. The preserved 1.8.1 fixes and the rebuild are committed together for 2.0.0. `replacement\build.ps1 -Test` still produces a separate preview in `dist\BWOS-Next`.
+The default app is the restored 1.8.1 payload at `dist\BWOS\BWOS.exe`. Root `build.ps1` builds the established app. Run `replacement\build.ps1 -Test` to produce the separate preview at `dist\BWOS-Next\BWOS-Next.exe`. Test the preview with the real controller and provider accounts before any default promotion or new release.
 
 ## Design decision
 
 Keep one permanent fullscreen Edge window, one retained Home document, and one explicitly owned tab for each provider. Use the real browser's native provider interface for sign-in and playback. Netflix lists Edge as a supported Windows browser; that is evidence for retaining Edge rather than choosing an unverified replacement decoder or promising equivalent DRM in a new webview. This remains an architectural inference, not account playback verification. [Netflix browser requirements](https://help.netflix.com/en/node/30081), [WebView2 profile separation](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/user-data-folder).
 
-Electron adds another Chromium runtime and migration surface without addressing provider certification; a native WebView2 rewrite would need new sign-in, DRM and capture verification. The installed Edge plus small .NET Framework host remains the least disruptive fit for this GTX 1050 machine. The new shell uses limited glass surfaces, progressive artwork (four concurrent loads), bounded card batches, and existing isolated speech work.
+The installed Edge plus small .NET Framework host remains the existing platform. The build copies the complete original UI, including translucent glass surfaces, artwork backdrops, platform button hints, shelf memory, repeat behavior and Steam duplicate-input suppression. Only a compatibility module bridges acknowledged native/playback actions and phone text/navigation to the existing API and input objects.
 
 ```mermaid
 flowchart LR
@@ -29,9 +29,9 @@ The native composition in `host/` was lifted from the current working tree, pres
 
 ## Implemented shell
 
-- Home, For You, Games, Apps, Devices and Settings; spatial focus, readable card titles, provider logo filters, configurable browser controller mappings and platform hints.
+- Original Home, For You, Games, Apps, Devices and Settings; explicit controller focus, shelf navigation, Xbox/PlayStation/Nintendo hints, confirm-button swapping and generic POV support.
 - Game library adapters for Steam/Epic/GOG/Ubisoft and manual executables/store URIs; launch, resume, quit and native Home when this host owns it.
-- All YouTube card/saved/search/Continue Watching URLs normalize to one TV session. Netflix/Prime retain their original playback engines. No embedded YouTube player is mounted by the new shell.
+- All YouTube card/saved/search/Continue Watching URLs use the TV session through the preserved 1.8.1 routes. Netflix/Prime retain their native provider pages.
 - Cached collected shelves, Unicode search with a controller keyboard, paging, global URL deduplication, combined sparse rows, source age/status and fuller-cache retention through the existing feed store.
 - One stable cloud, with play/pause, reopen, stop and secondary controls under More; a non-activating desktop companion only while the shell is out of front.
 - Existing local English/Hindi Whisper setup, NVIDIA acceleration with CPU fallback, microphone selection, Windows echo/noise processing, voice diagnostics, wake phrase “Hey console”, numbered selection and spoken replies. Navigation/game/playback/volume actions reach the shared dispatch boundary.

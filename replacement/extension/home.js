@@ -20,7 +20,7 @@
     const { requestId, url } = event.data;
     if (typeof requestId !== 'string' || (event.data.type==='bwos-open-service' && (typeof url !== 'string' || url.length > 4000))) return;
     const request=event.data.type==='bwos-search-recommendations'?{type:'search-recommendations',service:event.data.service,query:event.data.query}:event.data.type==='bwos-sync-recommendations'?{type:'sync-recommendations',service:event.data.service,target:event.data.target}:{ type: 'open-service', url };
-    chrome.runtime.sendMessage(request, result => {
+    chrome.runtime.sendMessage({...request,id:requestId}, result => {
       const error = chrome.runtime.lastError;
       window.postMessage({ type: 'bwos-open-result', requestId, result: result || { ok: false, error: error?.message || 'Browser adapter unavailable' } }, location.origin);
     });
