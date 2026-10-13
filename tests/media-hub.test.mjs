@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict';
-import {youtubeId,youtubeTvUrl,hubVideos,hubCatalogue,filterVideos} from '../ui/js/media-hub.js';
-for(const link of ['zTSXiF_cxG8','https://youtu.be/zTSXiF_cxG8','https://www.youtube.com/watch?v=zTSXiF_cxG8','https://m.youtube.com/shorts/zTSXiF_cxG8'])assert.equal(youtubeTvUrl(link),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8');
-assert.equal(youtubeTvUrl('https://www.youtube.com/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2&secret=drop'),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2');
-assert.equal(youtubeTvUrl('https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2'),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2');
-assert.equal(youtubeTvUrl('https://youtube.com.evil.test/watch?v=zTSXiF_cxG8'),null);
+import {youtubeId,hubVideos,hubCatalogue,filterVideos} from '../ui/js/media-hub.js';
 for(const link of ['https://www.youtube.com/watch?v=zTSXiF_cxG8','https://youtu.be/zTSXiF_cxG8?t=3','https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8','https://m.youtube.com/shorts/zTSXiF_cxG8']) assert.equal(youtubeId(link),'zTSXiF_cxG8');
 for(const link of ['https://youtube.com.evil.test/watch?v=zTSXiF_cxG8','http://www.youtube.com/watch?v=zTSXiF_cxG8','https://www.youtube.com:8080/watch?v=zTSXiF_cxG8','https://secret@www.youtube.com/watch?v=zTSXiF_cxG8','javascript:alert(1)']) assert.equal(youtubeId(link),null);
 const original={id:'film',title:'गली बॉय',genres:['Drama'],offers:[{app:'netflix',url:'https://netflix.com/title/test'},{app:'prime',url:'https://primevideo.com/test'}]};

@@ -19,12 +19,6 @@ $ErrorActionPreference = 'Stop'
 $target   = Join-Path $env:LOCALAPPDATA 'Programs\BWOS'
 $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'BWOS.lnk'
 $runKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-function Assert-InstallPath([string]$path) {
-    $absolute=[IO.Path]::GetFullPath($path)
-    $root=[IO.Path]::GetFullPath($target).TrimEnd('\')
-    if($absolute -ne $root -and -not $absolute.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){throw "Path outside BWOS installation: $absolute"}
-    if((Test-Path -LiteralPath $absolute) -and ((Get-Item -LiteralPath $absolute -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw "Redirected installation path: $absolute"}
-}
 
 function Stop-Bwos {
     Get-Process BWOS -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$target*" } | Stop-Process -Force
@@ -36,11 +30,10 @@ if ($Uninstall) {
     Remove-ItemProperty -Path $runKey -Name 'BWOS' -ErrorAction SilentlyContinue
     if (Test-Path $shortcut) { Remove-Item $shortcut }
     if (Test-Path $target) {
-        Assert-InstallPath $target
         if ($KeepData) {
-            Get-ChildItem -LiteralPath $target | Where-Object { $_.Name -ne 'data' } | ForEach-Object {Assert-InstallPath $_.FullName;Remove-Item -LiteralPath $_.FullName -Recurse -Force}
+            Get-ChildItem $target | Where-Object { $_.Name -ne 'data' } | Remove-Item -Recurse -Force
         } else {
-            Remove-Item -LiteralPath $target -Recurse -Force
+            Remove-Item $target -Recurse -Force
         }
     }
     Write-Host 'BWOS was uninstalled.' -ForegroundColor Green
@@ -60,18 +53,9 @@ if (-not $Source -or -not (Test-Path (Join-Path $Source 'BWOS.exe'))) {
 
 Stop-Bwos
 New-Item -ItemType Directory -Force $target | Out-Null
-# Keep a recoverable app payload without copying or changing personal data.
-if(Test-Path -LiteralPath (Join-Path $target 'BWOS.exe')) {
-    $backup=Join-Path $target ('backups\app-'+[Guid]::NewGuid().ToString('N'))
-    Assert-InstallPath $backup
-    New-Item -ItemType Directory -Force $backup | Out-Null
-    foreach($item in 'BWOS.exe','ui','extensions','THIRD_PARTY_NOTICES.md'){if(Test-Path -LiteralPath (Join-Path $target $item)){Copy-Item -LiteralPath (Join-Path $target $item) -Destination $backup -Recurse}}
-    Write-Host "Previous app files backed up to $backup"
-}
 foreach ($item in 'BWOS.exe', 'ui', 'extensions') {
     $dest = Join-Path $target $item
-    Assert-InstallPath $dest
-    if (Test-Path $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
     Copy-Item (Join-Path $Source $item) $dest -Recurse
 }
 if (Test-Path (Join-Path $Source 'THIRD_PARTY_NOTICES.md')) {

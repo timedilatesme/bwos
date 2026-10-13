@@ -20,7 +20,7 @@ async function bwos(path, body) {
   if (!res.ok) throw new Error('BWOS returned ' + res.status + ' for ' + path);
   return res.json();
 }
-console.info('BWOS streaming adapter 2.10.1 started');
+console.info('BWOS streaming adapter 2.10.0 started');
 
 // Retire 2.5.1's dynamic desktop identity. The packaged TV navigation rule is
 // available before the worker starts; APIs/scripts/media keep native headers.
@@ -73,7 +73,7 @@ async function openService(url, sender) {
   if (!home || sender.frameId !== 0 || !sender.tab?.url?.startsWith(home)) throw new Error('Open apps from BWOS Home');
   const key = serviceKey(url), parsed = new URL(url);
   const tabs = await chrome.tabs.query({ windowId: sender.tab.windowId });
-  const candidates = tabs.filter(tab => { try { return !recommendationTabs.has(tab.id) && serviceKey(tab.pendingUrl || tab.url) === key; } catch { return false; } });
+  const candidates = tabs.filter(tab => { try { return serviceKey(tab.pendingUrl || tab.url) === key; } catch { return false; } });
   const all = await players();
   const existing = candidates.find(tab => all[tab.id] && !all[tab.id].data.paused) || candidates.sort((a, b) => b.id - a.id)[0];
   // Opening the app's landing page resumes its existing session. An explicit search/title
@@ -96,10 +96,6 @@ async function openService(url, sender) {
   if (existing) tab = await chrome.tabs.update(existing.id, { active: true, autoDiscardable: false, ...((!landing || repairTv) && existing.url !== destination ? { url: destination } : {}) });
   else tab = await chrome.tabs.create({ windowId: sender.tab.windowId, url, active: true });
   await chrome.tabs.update(tab.id, { autoDiscardable: false });
-  // Older adapters could promote a muted collector into the live player. Repair
-  // only our own tab mute on explicit opening; preserve user/other-extension mutes.
-  if (tab.mutedInfo?.muted && tab.mutedInfo.reason === 'extension' && tab.mutedInfo.extensionId === chrome.runtime.id)
-    await chrome.tabs.update(tab.id, { muted: false });
   if (all[tab.id] && !repairTv) { all[tab.id].background = false; await chrome.storage.session.set({ players: all }); await reportPlayer(tab.id, all[tab.id]); }
   await chrome.windows.update(tab.windowId, { state: 'fullscreen' });
   await chrome.windows.update(tab.windowId, { focused: true });

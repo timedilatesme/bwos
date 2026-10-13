@@ -12,7 +12,7 @@ namespace Bwos
     /// <summary>Wires the services together and implements the HTTP API used by the UI.</summary>
     internal sealed class App
     {
-        public const string Version = "1.8.1";
+        public const string Version = "1.8.0";
         /// <summary>How this PC appears in phones' cast and AirPlay menus.</summary>
         public static readonly string CastName = "BWOS (" + Environment.MachineName + ")";
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
