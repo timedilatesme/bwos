@@ -31,6 +31,18 @@ export function youtubeId(input) {
     return /^[a-zA-Z0-9_-]{11}$/.test(id || '') ? id : null;
   } catch { return null; }
 }
+export function youtubeTvUrl(input) {
+  const id=youtubeId(input);
+  if(!id)return null;
+  const watch=new URLSearchParams({v:id});
+  try {
+    const url=new URL(input),query=url.pathname.startsWith('/tv')?new URLSearchParams(url.hash.split('?')[1] || ''):url.searchParams;
+    const list=query.get('list'),index=query.get('index');
+    if(/^[a-zA-Z0-9_-]{1,128}$/.test(list || ''))watch.set('list',list);
+    if(list && /^\d{1,6}$/.test(index || ''))watch.set('index',index);
+  }catch{ /* A plain video ID needs no extra parameters. */ }
+  return 'https://www.youtube.com/tv#/watch?'+watch;
+}
 export function hubVideos(state) {
   const byId = new Map();
   for (const item of [...(state.videos || []), ...(state.upNext || []).filter(item=>item.app==='youtube'),...syncedRecommendationRows(state,'youtube').flatMap(row=>row.items || [])]) {

@@ -7,7 +7,7 @@ import { updateAssistant } from './assistant.js';
 import { setVoiceScope, showVoiceNumbers, hideVoiceNumbers, refreshVoiceNumbers, voiceNumber, matchVoiceNames, voiceAlias } from './voice.js';
 import { renderPlayback, focusPlayback, leavePlayback, playbackScope } from './playback.js';
 import { openServiceTab, syncServiceRecommendations, searchServiceRecommendations } from './service-tabs.js';
-import { hubCatalogue, hubVideos, youtubeId } from './media-hub.js';
+import { hubCatalogue, hubVideos, youtubeId, youtubeTvUrl } from './media-hub.js';
 import { YouTubePlayer } from './youtube-player.js';
 import {serviceSwitcher, recommendationContents} from './recommendations.js';
 import {artworkImage} from './artwork.js';
@@ -1232,9 +1232,7 @@ async function activate(el) {
       case 'hubType': hubType=el.dataset.type; renderHub(); focus.set($(`[data-key="hub:type:${hubType}"]`)); return;
       case 'hubVideo': {
         const videos=hubVideos(discoveryState()),video=videos.find(video=>video.id===el.dataset.id);
-        const shelf=el.closest('.row');
-        const queue=shelf?$$('[data-kind="hubVideo"]',shelf).map(card=>videos.find(item=>item.id===card.dataset.id)).filter(Boolean):videos;
-        if(video)await playEmbedded(video,queue);return;
+        if(video)await openYouTubeVideo(video);return;
       }
       case 'playback': return api.playbackControl(el.dataset.id, el.dataset.action);
       case 'playbackPanel': return focusPlayback();
@@ -1338,7 +1336,7 @@ async function playTitle(id) {
 async function resumeWatching(id) {
   const e = upNextById(id);
   if (!e) return;
-  if(e.app==='youtube' && youtubeId(e.url)){await playEmbedded({...e,id:youtubeId(e.url)},hubVideos(S));return;}
+  if(e.app==='youtube' && youtubeId(e.url))return openYouTubeVideo(e,'resume:'+e.id);
   const app = e.app && watchById(e.app);
   return openInside({ url: withAutoplay(e.url), title: e.title, sub: e.subtitle ? 'Resuming ' + e.subtitle : 'Resuming…', brand: app && app.color, bg: e.backdrop || e.artwork, returnKey: 'resume:' + e.id });
 }
@@ -1348,14 +1346,13 @@ function withAutoplay(url) {
   return url.includes('#') ? url + '&bwos-play' : url + '#bwos-play';
 }
 
-async function playEmbedded(video,queue=[]) {
-  youtubePlayer.instructions.textContent=label('accept')+' · Play / pause    ◀ ▶ · Skip 10 s    ↑ / Menu · Controls    Home / Back · Browse';
-  await youtubePlayer.play(video,queue);
-  const button=youtubePlayer.controls.querySelector('[data-action="toggle"][data-focus]') || youtubePlayer.controls.querySelector('[data-action="app"]');
-  if(youtubePlayer.error && button)focus.set(button);
+async function openYouTubeVideo(video,returnKey) {
+  const url=youtubeTvUrl(video.url || video.id);
+  if(!url)return toast('This YouTube video link is invalid.','alert');
+  return openInside({url,title:video.title || 'YouTube',sub:'Opening YouTube TV…',brand:'#ff0033',bg:video.artwork || video.backdrop,returnKey:returnKey || 'video:'+youtubeId(url)});
 }
 function watchOffer(title,offer) {
-  if(offer.app==='youtube' && youtubeId(offer.url))return playEmbedded({...title,url:offer.url},hubVideos(S));
+  if(offer.app==='youtube' && youtubeId(offer.url))return openYouTubeVideo({...title,url:offer.url},'title:'+title.id);
   const app=watchById(offer.app);
   return openInside({url:withAutoplay(offer.url),title:title.title,sub:'Starting on '+offer.name+'…',brand:app?.color,bg:title.backdrop || title.poster,returnKey:'title:'+title.id});
 }
@@ -1461,8 +1458,7 @@ function openOptions(el) {
   const kind = el.dataset.kind;
   if(kind==='hubVideo') {
     const video=hubVideos(discoveryState()).find(item=>item.id===el.dataset.id); if(!video) return;
-    const options=[['play','Play in BWOS','play',()=>playEmbedded(video,hubVideos(discoveryState()))],
-      ['app','Open in YouTube TV','play',()=>openInside({url:'https://www.youtube.com/tv#/watch?v='+video.id,title:video.title,returnKey:'video:'+video.id})]];
+    const options=[['play','Play on YouTube TV','play',()=>openYouTubeVideo(video)]];
     if(video.saved) options.push(['remove','Remove saved video','eyeoff',()=>api.removeVideo(video.id).then(reload)]);
     else options.push(['save','Save video','play',()=>api.addVideo(video.url).then(reload)]);
     options.push(['cancel','Cancel']); return confirm(video.title,video.author || '',options);

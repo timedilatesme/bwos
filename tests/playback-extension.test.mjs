@@ -20,7 +20,7 @@ const chrome = {
     onChanged: event()
   },
   commands: { onCommand: event(callback => { command = callback; }) },
-  runtime: { onMessage: event(callback => { message = callback; }) },
+  runtime: { id:'bwos-test-extension', onMessage: event(callback => { message = callback; }) },
   tabs: {
     query: async query => { assert.equal(query.url, undefined, 'Home lookup avoids port-specific match patterns'); return [...tabs.values()].filter(tab => (query.windowId == null || tab.windowId === query.windowId) && (!query.active || tab.active)); },
     create: async value => {
@@ -265,3 +265,31 @@ chrome.tabs.sendMessage=async(id,value,frame)=>value.type==='recommendations-dis
 assert.equal((await send({type:'sync-recommendations',service:'youtube'},recommendationHome)).ok,true,'Unavailable TV source preserves desktop cards');
 assert.equal(reports.at(-1).complete,false,'Failed expansion stays partial');
 console.log('PASS: YouTube TV fallback, cross-source deduplication and sparse-source preservation');
+
+// Opening YouTube while discovery is in flight must never steal the muted,
+// temporary collector. Its message restrictions and cleanup belong to discovery only.
+let finishDiscovery;
+chrome.tabs.sendMessage=async(id,value,frame)=>value.type==='recommendations-discover'
+  ? new Promise(resolve=>{finishDiscovery=resolve;}) : originalSend(id,value,frame);
+const runningDiscovery=send({type:'sync-recommendations',service:'youtube'},recommendationHome);
+await flush();
+const collector=[...tabs.values()].find(tab=>tab.windowId===recommendationHome.windowId && tab.muted===true);
+assert.ok(collector,'The collector is deliberately muted');
+assert.equal((await send({type:'open-service',url:'https://www.youtube.com/tv'},recommendationHome)).ok,true);
+const liveYouTube=[...tabs.values()].find(tab=>tab.windowId===recommendationHome.windowId && tab.active && tab.url?.includes('youtube.com/tv'));
+assert.notEqual(liveYouTube.id,collector.id,'The live player must not reuse the temporary discovery tab');
+snapshots.set(liveYouTube.id,{title:'Live TV playback',paused:false});
+assert.equal((await send({type:'home'},liveYouTube)).ok,true,'Home remains available during discovery');
+assert.equal(session.players[liveYouTube.id].background,true,'The live TV player survives Home');
+finishDiscovery({data:{service:'youtube',rows:[{title:'TV picks',items:Array.from({length:60},(_,i)=>({title:'Video '+i,url:'https://www.youtube.com/watch?v='+String(i).padStart(11,'0')}))}]}});
+await runningDiscovery;
+assert.ok(!tabs.has(collector.id) && tabs.has(liveYouTube.id),'Discovery cleanup removes only the collector');
+
+tabs.get(liveYouTube.id).mutedInfo={muted:true,reason:'extension',extensionId:chrome.runtime.id};
+await send({type:'open-service',url:'https://www.youtube.com/tv'},recommendationHome);
+assert.ok(updates.some(update=>update.id===liveYouTube.id && update.muted===false),'Explicit playback repairs a tab muted by BWOS');
+updates.length=0;
+tabs.get(liveYouTube.id).mutedInfo={muted:true,reason:'user'};
+await send({type:'open-service',url:'https://www.youtube.com/tv'},recommendationHome);
+assert.ok(!updates.some(update=>update.muted===false),'A deliberate user mute is preserved');
+console.log('PASS: discovery/playback isolation, Home during discovery, collector cleanup and owned-mute recovery');

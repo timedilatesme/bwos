@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "BWOS TV",
-  "version": "2.10.0",
+  "version": "2.10.1",
   "description": "Controller navigation and persistent streaming apps inside BWOS, including YouTube TV.",
   "permissions": ["declarativeNetRequest", "storage", "tabs", "webRequest"],
   "host_permissions": ["*://www.youtube.com/*", "https://*.googlevideo.com/*", "http://127.0.0.1/*", "http://localhost/*"],
