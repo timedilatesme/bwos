@@ -9,12 +9,18 @@ export class ScreenSharing {
     if(this.starting)throw Error('A screen-sharing selection is already open.');
     if(!navigator.mediaDevices?.getDisplayMedia)throw Error('Screen sharing needs the Windows Edge or Chrome browser.');
     // Must run directly from Select/click, before any network awaits.
-    this.starting=true;let media,generation;
+    this.starting=true;let media;
+    const generation=++this.generation;
     try {
       media=await navigator.mediaDevices.getDisplayMedia({video:{displaySurface:'monitor',frameRate:{ideal:30,max:30},width:{max:1920},height:{max:1080}},audio:true,systemAudio:'include',selfBrowserSurface:'include',surfaceSwitching:'exclude'});
-      generation=++this.generation;
+      if(generation!==this.generation)throw Error('Screen sharing was cancelled.');
       this.media=media;
-      this.session=await api.stream('start');
+      const started=await api.stream('start');
+      if(generation!==this.generation) {
+        await api.stream('stop',{session:started.session}).catch(()=>{});
+        throw Error('Screen sharing was cancelled.');
+      }
+      this.session=started;
       const session=this.session.session;
       this.peer=new ScreenPeer({stream:media,send:(type,data)=>api.stream('signal',{session,type,data}),state:state=>this.changed({active:true,state,audio:media.getAudioTracks().length>0}),failed:error=>this.stop(error.message)});
       for(const track of media.getTracks())track.addEventListener('ended',()=>{if(generation===this.generation)this.stop();},{once:true});
@@ -22,7 +28,11 @@ export class ScreenSharing {
       this.changed({active:true,state:'waiting',audio:media.getAudioTracks().length>0});
       this.poll(generation,session);
       return {...this.session,audio:media.getAudioTracks().length>0};
-    } catch(error) {await this.stop();throw error;}
+    } catch(error) {
+      media?.getTracks().forEach(track=>track.stop());
+      if(generation===this.generation)await this.stop();
+      throw error;
+    }
     finally {this.starting=false;}
   }
   async poll(generation,session) {

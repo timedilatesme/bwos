@@ -12,15 +12,19 @@ async function settings() {
 async function bwos(path, body) {
   const { home, token } = await settings();
   if (!home || !token) return null;
-  const res = await fetch(home + path, {
-    method: 'POST',
-    headers: { 'X-BWOS-Token': token, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {})
-  });
-  if (!res.ok) throw new Error('BWOS returned ' + res.status + ' for ' + path);
-  return res.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(home + path, {
+      method: 'POST',
+      headers: { 'X-BWOS-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}), signal: controller.signal
+    });
+    if (!res.ok) throw new Error('BWOS returned ' + res.status + ' for ' + path);
+    return await res.json();
+  } finally { clearTimeout(timer); }
 }
-console.info('BWOS streaming adapter 2.10.1 started');
+console.info('BWOS streaming adapter 2.11.0 started');
 
 // Retire 2.5.1's dynamic desktop identity. The packaged TV navigation rule is
 // available before the worker starts; APIs/scripts/media keep native headers.
@@ -30,15 +34,65 @@ const tvCompatibilityReady = (async () => {
 })();
 tvCompatibilityReady.catch(error => diagnose('YouTube compatibility', error));
 
-let homeTask, polling = false, work = Promise.resolve(), playbackSocket;
+let polling = false, work = Promise.resolve(), playbackSocket, connectingPlayback;
+let playerWork = Promise.resolve(), navigationWork = Promise.resolve();
+const homeTasks = new Map(), navigation = new Map(), homeHandoffs = new Map();
+function beginNavigation(windowId) {
+  const intent = { windowId };
+  navigation.set(windowId, intent);
+  return intent;
+}
+const currentNavigation = intent => navigation.get(intent.windowId) === intent;
+function navigate(intent, task) {
+  // Only browser operations share this lane; host/player requests never block Home.
+  const result = navigationWork.then(() => currentNavigation(intent) ? task() : null);
+  navigationWork = result.catch(() => {});
+  return result;
+}
+function updatePlayers(edit) {
+  // Short read/modify/write transactions prevent concurrent Home/reports losing players.
+  const result = playerWork.then(async () => {
+    const all = await players(), value = edit(all);
+    await chrome.storage.session.set({ players: all });
+    return value;
+  });
+  playerWork = result.catch(() => {});
+  return result;
+}
+const pendingWork = new Map();
+const pendingMedia = new Map();
 function schedule(task) { const result = work.then(task); work = result.catch(() => {}); return result; }
-async function connectPlayback() {
+function scheduleOnce(key, task) {
+  if (pendingWork.has(key)) return pendingWork.get(key);
+  const result = schedule(task).finally(() => pendingWork.delete(key));
+  pendingWork.set(key, result);
+  return result;
+}
+function scheduleMedia(msg, sender) {
+  if (msg.data?.ended) homeHandoffs.delete(sender.tab?.id);
+  const key = sender.tab?.id + ':' + sender.frameId;
+  const pending = pendingMedia.get(key);
+  if (pending) { pending.msg = msg; pending.sender = sender; return pending.result; }
+  const entry = { msg, sender };
+  entry.result = schedule(() => {
+    pendingMedia.delete(key);
+    return mediaReport(entry.msg, entry.sender);
+  });
+  pendingMedia.set(key, entry);
+  return entry.result;
+}
+function connectPlayback() {
+  if (connectingPlayback) return connectingPlayback;
+  connectingPlayback = openPlaybackSocket().finally(() => { connectingPlayback = null; });
+  return connectingPlayback;
+}
+async function openPlaybackSocket() {
   if (playbackSocket && playbackSocket.readyState < 2) return;
   const { home, token } = await settings();
   if (!home || !token) return;
   const socket = playbackSocket = new WebSocket(home.replace(/^http:/, 'ws:') + 'api/playback-events?t=' + token);
-  socket.onmessage = event => { if (event.data === 'playback') schedule(pollPlayback).catch(() => {}); };
-  socket.onopen = () => schedule(pollPlayback).catch(() => {});
+  socket.onmessage = event => { if (event.data === 'playback') scheduleOnce('playback', pollPlayback).catch(() => {}); };
+  socket.onopen = () => scheduleOnce('playback', pollPlayback).catch(() => {});
   socket.onclose = () => { if (playbackSocket === socket) playbackSocket = null; setTimeout(() => connectPlayback().catch(() => {}), 2000); };
 }
 connectPlayback().catch(() => {});
@@ -65,9 +119,10 @@ async function activateHome(sourceTab, base, token) {
   if (homeTab.windowId !== sourceTab.windowId) throw new Error('Home must stay in the BWOS window');
   await chrome.tabs.update(homeTab.id, { autoDiscardable: false });
   // This message switches the retained UI to Home without reloading its document.
-  await sendToTab(homeTab.id, { type: 'shell-home' }, { frameId: 0 }, 1000).catch(() => {});
+  sendToTab(homeTab.id, { type: 'shell-home' }, { frameId: 0 }, 1000).catch(() => {});
 }
-async function openService(url, sender) {
+async function openService(url, sender, intent) {
+  if (!currentNavigation(intent)) return { ok: false, error: 'App opening was cancelled by a newer navigation.' };
   if (/^https:\/\/www\.youtube\.com\/tv(?:[/?#]|$)/.test(url)) await tvCompatibilityReady;
   const { home } = await settings();
   if (!home || sender.frameId !== 0 || !sender.tab?.url?.startsWith(home)) throw new Error('Open apps from BWOS Home');
@@ -79,7 +134,7 @@ async function openService(url, sender) {
   // Opening the app's landing page resumes its existing session. An explicit search/title
   // request can navigate the retained tab, but never creates another player for that service.
   const landing = !parsed.search && !parsed.hash && ['/', '/tv', '/tv/'].includes(parsed.pathname);
-  let destination = url, repairTv = false;
+  let destination = url, repairTv = false, repairWeb = false;
   if (existing && landing && parsed.hostname === 'www.youtube.com' && /^\/tv\/?$/.test(parsed.pathname)) {
     const retained = new URL(existing.pendingUrl || existing.url);
     repairTv = !/^\/tv(?:\/|$)/.test(retained.pathname);
@@ -91,19 +146,40 @@ async function openService(url, sender) {
       destination = 'https://www.youtube.com/tv#/watch?' + watch;
     }
   }
-  await chrome.tabs.update(sender.tab.id, { autoDiscardable: false });
-  let tab;
-  if (existing) tab = await chrome.tabs.update(existing.id, { active: true, autoDiscardable: false, ...((!landing || repairTv) && existing.url !== destination ? { url: destination } : {}) });
-  else tab = await chrome.tabs.create({ windowId: sender.tab.windowId, url, active: true });
-  await chrome.tabs.update(tab.id, { autoDiscardable: false });
+  if (existing && landing && parsed.hostname === 'www.youtube.com' && parsed.pathname === '/') {
+    const retained = new URL(existing.pendingUrl || existing.url);
+    repairWeb = /^\/tv(?:\/|$)/.test(retained.pathname);
+    const query = new URLSearchParams(retained.hash.split('?')[1] || '');
+    if (repairWeb && /^[\w-]{11}$/.test(query.get('v') || '')) {
+      const watch = new URLSearchParams({ v: query.get('v') });
+      for (const name of ['list', 'index']) if (query.has(name)) watch.set(name, query.get(name));
+      destination = 'https://www.youtube.com/watch?' + watch;
+    }
+  }
+  const tab = await navigate(intent, async () => {
+    await chrome.tabs.update(sender.tab.id, { autoDiscardable: false });
+    let selected;
+    if (existing) selected = await chrome.tabs.update(existing.id, { active: true, autoDiscardable: false, ...((!landing || repairTv || repairWeb) && existing.url !== destination ? { url: destination } : {}) });
+    else selected = await chrome.tabs.create({ windowId: sender.tab.windowId, url, active: true });
+    await chrome.tabs.update(selected.id, { autoDiscardable: false });
   // Older adapters could promote a muted collector into the live player. Repair
   // only our own tab mute on explicit opening; preserve user/other-extension mutes.
-  if (tab.mutedInfo?.muted && tab.mutedInfo.reason === 'extension' && tab.mutedInfo.extensionId === chrome.runtime.id)
-    await chrome.tabs.update(tab.id, { muted: false });
-  if (all[tab.id] && !repairTv) { all[tab.id].background = false; await chrome.storage.session.set({ players: all }); await reportPlayer(tab.id, all[tab.id]); }
-  await chrome.windows.update(tab.windowId, { state: 'fullscreen' });
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await reportContext({ ...tab, active: true });
+    if (selected.mutedInfo?.muted && selected.mutedInfo.reason === 'extension' && selected.mutedInfo.extensionId === chrome.runtime.id)
+      await chrome.tabs.update(selected.id, { muted: false });
+    await updatePlayers(latest => {
+      if (!landing && existing?.url !== destination) delete latest[selected.id];
+      else if (latest[selected.id]) {
+        latest[selected.id].background = false;
+        if (repairTv || repairWeb) latest[selected.id].data.url = destination;
+      }
+    });
+    await chrome.windows.update(selected.windowId, { state: 'fullscreen', focused: true });
+    return selected;
+  });
+  if (!tab || !currentNavigation(intent)) return { ok: false, error: 'App opening was cancelled by a newer navigation.' };
+  const player = (await players())[tab.id];
+  if (player) reportPlayer(tab.id, player).catch(error => diagnose('player', error));
+  reportContext({ ...tab, active: true }).catch(error => diagnose('context', error));
   return { ok: true };
 }
 async function reportContext(tab) {
@@ -234,37 +310,46 @@ if (chrome.webRequest) {
 }
 async function mediaReport(msg, sender) {
   if (!sender.tab || !msg.data || !sender.tab.url?.startsWith('https://')) return;
-  const all = await players(), id = sender.tab.id, old = all[id];
-  // A playing top-level player takes precedence over a paused embedded frame.
-  if (old && old.frameId !== sender.frameId && (!old.data.paused || msg.data.paused) && Date.now() - old.seen < 10000) return;
-  const data = { ...msg.data, url: sender.tab.url };
-  const player = { data, frameId: sender.frameId, windowId: sender.tab.windowId, background: old?.background || false, seen: Date.now() };
-  if (data.ended) delete all[id]; else all[id] = player;
-  await chrome.storage.session.set({ players: all });
-  await reportPlayer(id, player, data.ended);
+  const id = sender.tab.id;
+  const player = await updatePlayers(all => {
+    const old = all[id];
+    // A playing top-level player takes precedence over a paused embedded frame.
+    if (old && old.frameId !== sender.frameId && (!old.data.paused || msg.data.paused) && Date.now() - old.seen < 10000) return;
+    const data = { ...msg.data, url: sender.tab.url };
+    const player = { data, frameId: sender.frameId, windowId: sender.tab.windowId, background: navigation.get(sender.tab.windowId)?.kind === 'home' || old?.background || false, seen: Date.now() };
+    if (data.ended) delete all[id]; else all[id] = player;
+    return player;
+  });
+  if (!player) return;
+  await reportPlayer(id, player, player.data.ended);
   await pollPlayback();
 }
 async function pollPlayback() {
   if (polling) return;
   polling = true;
+  const before = new Map(navigation);
   try {
     const batch = await bwos('api/playback/claim', {});
     for (const command of batch?.commands || []) {
       const all = await players(), player = all[command.id], id = Number(command.id);
       if (!player) continue;
+      homeHandoffs.delete(id);
       try {
         if (command.action === 'focus') {
-          await chrome.windows.update(player.windowId, { state: 'fullscreen', focused: true });
-          await chrome.tabs.update(id, { active: true });
-          player.background = false; all[id] = player;
-          await chrome.storage.session.set({ players: all });
-          await reportPlayer(id, player);
+          if (navigation.get(player.windowId) !== before.get(player.windowId)) continue;
+          const intent = beginNavigation(player.windowId);
+          await navigate(intent, async () => {
+            await chrome.windows.update(player.windowId, { state: 'fullscreen', focused: true });
+            await chrome.tabs.update(id, { active: true });
+            await updatePlayers(latest => { if (latest[id]) latest[id].background = false; });
+          });
+          if (currentNavigation(intent)) await reportPlayer(id, { ...player, background: false });
         } else if (command.action === 'retry') {
           // Reload this service only. Keep Home, the same tab, and the TV watch route.
           await chrome.tabs.reload(id);
         } else if (command.action === 'stop') {
           await chrome.tabs.remove(id);
-          delete all[id]; await chrome.storage.session.set({ players: all });
+          await updatePlayers(latest => { delete latest[id]; });
           await reportPlayer(id, player, true);
         } else {
           const result = await sendToTab(id, { type: 'media-control', action: command.action, value: command.value || '' }, { frameId: player.frameId });
@@ -276,7 +361,7 @@ async function pollPlayback() {
     }
   } finally { polling = false; }
 }
-async function returnHome(tabId) {
+async function returnHome(tabId, intent) {
   const { home, token } = await settings();
   const base = home || 'http://127.0.0.1:47913/';
   if (tabId == null) {
@@ -285,81 +370,114 @@ async function returnHome(tabId) {
     tabId = tab.id;
   }
   const sourceTab = await chrome.tabs.get(tabId);
+  if (!sourceTab) throw Error('The source tab was closed');
+  intent ||= beginNavigation(sourceTab.windowId);
+  intent.kind = 'home';
+  if (!currentNavigation(intent)) return;
   if(sourceTab.url?.startsWith(base)) {
     // The retained Home document owns its embedded player. Never inventory it
     // again as an external tab or try to resume its iframe during a handoff.
-    await activateHome(sourceTab,base,token);
-    await chrome.windows.update(sourceTab.windowId,{state:'fullscreen',focused:true});
-    await bwos('api/browser/context',{kind:'home',foreground:true});
+    await navigate(intent, async () => {
+      await activateHome(sourceTab,base,token);
+      await chrome.windows.update(sourceTab.windowId,{state:'fullscreen',focused:true});
+    });
+    if (currentNavigation(intent)) bwos('api/browser/context',{kind:'home',foreground:true}).catch(error => diagnose('context', error));
     return;
   }
-  let all = await players(), player = all[tabId];
-  // Probe at the moment Home is pressed, including before the first periodic report.
-  try {
-    const snapshot = await sendToTab(tabId, { type: 'media-snapshot' }, player ? { frameId: player.frameId } : undefined, 1250);
-    if (snapshot?.data && !snapshot.data.ended) {
-      const tab = await chrome.tabs.get(tabId);
-      player = { data: { ...snapshot.data, url: tab.url }, frameId: snapshot.frameId, windowId: tab.windowId, background: false, seen: Date.now() };
-      all[tabId] = player; await chrome.storage.session.set({ players: all });
-    }
-  } catch { /* Retain an already known player when its frame is temporarily unavailable. */ }
-  if (!player && sourceTab.audible) {
-    player = { data: { url: sourceTab.url, title: sourceTab.title || 'Media', paused: false, canControl: false, error: 'Reopen the player for playback controls.' }, frameId: 0, windowId: sourceTab.windowId, background: false, seen: Date.now() };
-    all[tabId] = player; await chrome.storage.session.set({ players: all });
-  }
-  if (player) {
-    const keepPlaying = !player.data.paused && !player.data.ended;
-    const windowId = sourceTab.windowId;
+  const known = (await players())[tabId];
+  const handoff = { intent };
+  homeHandoffs.set(tabId, handoff);
+  // Start the probe before switching tabs, but never wait for a frozen provider to show Home.
+  const snapshot = sendToTab(tabId, { type: 'media-snapshot' }, known ? { frameId: known.frameId } : undefined, 1250).catch(() => null);
+  await navigate(intent, async () => {
+    await updatePlayers(all => {
+      if (!all[tabId] && sourceTab.audible) all[tabId] = handoff.fallback = { data: { url: sourceTab.url, title: sourceTab.title || 'Media', paused: false, canControl: false, error: 'Reopen the player for playback controls.' }, frameId: 0, windowId: sourceTab.windowId, seen: Date.now() };
+      if (all[tabId]) all[tabId].background = true;
+    });
     await activateHome(sourceTab, base, token);
-    player.background = true;
-    all[tabId] = player; await chrome.storage.session.set({ players: all });
     await chrome.tabs.update(tabId, { autoDiscardable: false });
-    // Leave the player in an inactive tab instead of creating another window. Some TV clients pause
-    // on blur/visibility changes; recover only playback that was active at handoff.
-    if (keepPlaying && player.data.canControl !== false) {
-      try {
-        const result = await sendToTab(tabId, { type: 'media-handoff', keepPlaying: true }, { frameId: player.frameId }, 2000);
-        if (result?.data) player.data = { ...result.data, url: sourceTab.url };
-        if (!result?.ok) player.data.error = 'Playback paused while returning Home. Use Play or reopen the player.';
-      } catch { player.data.error = 'Could not keep this player playing. Reopen it to continue.'; }
-    }
-    all[tabId] = player; await chrome.storage.session.set({ players: all });
-    // Switching away from a site's HTML fullscreen player can exit fullscreen.
-    // Reassert browser fullscreen on the same window after tab activation.
-    await chrome.windows.update(windowId, { state: 'fullscreen' });
-    await chrome.windows.update(windowId, { focused: true });
-    await bwos('api/browser/context', { kind: 'home', foreground: true });
-    await reportPlayer(tabId, player);
-  } else {
-    await activateHome(sourceTab, base, token);
-    await chrome.windows.update(sourceTab.windowId, { state: 'fullscreen' });
-    await chrome.windows.update(sourceTab.windowId, { focused: true });
-    await bwos('api/browser/context', { kind: 'home', foreground: true });
+    await chrome.windows.update(sourceTab.windowId, { state: 'fullscreen', focused: true });
+  });
+  if (!currentNavigation(intent)) return;
+  bwos('api/browser/context', { kind: 'home', foreground: true }).catch(error => diagnose('context', error));
+  finishHomeHandoff(tabId, sourceTab, snapshot, handoff, known).catch(error => diagnose('Home playback', error)).finally(() => {
+    if (homeHandoffs.get(tabId) === handoff) homeHandoffs.delete(tabId);
+  });
+}
+async function finishHomeHandoff(tabId, sourceTab, pendingSnapshot, handoff, known) {
+  const { intent } = handoff;
+  const valid = () => currentNavigation(intent) && homeHandoffs.get(tabId) === handoff;
+  const snapshot = await pendingSnapshot;
+  if (!valid()) return;
+  let player = await updatePlayers(all => {
+    // A newer periodic report wins over the snapshot captured at the Home press.
+    if (!valid()) return;
+    const current = all[tabId];
+    const matches = previous => previous && current.seen === previous.seen && JSON.stringify(current.data) === JSON.stringify(previous.data);
+    const unchanged = !current || matches(known) || matches(handoff.fallback);
+    if (snapshot?.data && !snapshot.data.ended && unchanged)
+      all[tabId] = { data: { ...snapshot.data, url: sourceTab.url }, frameId: snapshot.frameId, windowId: sourceTab.windowId, background: true, seen: Date.now() };
+    return all[tabId];
+  });
+  if (!player || !valid()) return;
+  if (!player.data.paused && !player.data.ended && player.data.canControl !== false) {
+    let result, error;
+    try {
+      result = await sendToTab(tabId, { type: 'media-handoff', keepPlaying: true }, { frameId: player.frameId }, 2000);
+      if (!result?.ok) error = 'Playback paused while returning Home. Use Play or reopen the player.';
+    } catch { error = 'Could not keep this player playing. Reopen it to continue.'; }
+    if (!valid()) return;
+    player = await updatePlayers(all => {
+      // Do not replace a newer report, remove a new player, or undo an explicit reopen.
+      if (!valid() || all[tabId]?.seen !== player.seen || JSON.stringify(all[tabId]?.data) !== JSON.stringify(player.data) || !all[tabId]?.background) return all[tabId];
+      if (result?.data) all[tabId].data = { ...result.data, url: sourceTab.url };
+      if (error) all[tabId].data.error = error;
+      return all[tabId];
+    });
   }
+  if (player && valid()) await reportPlayer(tabId, player);
 }
-function goHome(tabId) {
-  if (homeTask) return homeTask;
-  homeTask = schedule(() => returnHome(tabId)).then(() => ({ ok: true })).catch(async () => {
+function goHome(tabId, windowId) {
+  const key = windowId ?? 'active';
+  const pending = homeTasks.get(key);
+  if (pending?.intent && currentNavigation(pending.intent)) return pending.task;
+  const intent = windowId == null ? null : beginNavigation(windowId);
+  if (intent) intent.kind = 'home';
+  const task = returnHome(tabId, intent).then(() => ({ ok: true })).catch(() => {
+    if (homeHandoffs.get(tabId)?.intent === intent) homeHandoffs.delete(tabId);
     const error = 'Could not return Home. Your player was kept open. Try opening BWOS again.';
-    await bwos('api/browser/error', { message: error }).catch(() => {});
+    bwos('api/browser/error', { message: error }).catch(() => {});
     return { ok: false, error };
-  }).finally(() => { homeTask = null; });
-  return homeTask;
+  }).finally(() => { if (homeTasks.get(key)?.task === task) homeTasks.delete(key); });
+  homeTasks.set(key, { task, intent });
+  return task;
 }
-setInterval(() => { connectPlayback().catch(error => diagnose('connection', error)); schedule(pollPlayback).catch(error => diagnose('playback', error)); pollContext().catch(error => diagnose('context', error)); }, 1000);
-chrome.tabs.onRemoved.addListener(id => schedule(async () => {
-  const all = await players(), player = all[id];
+let contextPolling = false;
+setInterval(() => {
+  connectPlayback().catch(error => diagnose('connection', error));
+  scheduleOnce('playback', pollPlayback).catch(error => diagnose('playback', error));
+  if (!contextPolling) {
+    contextPolling = true;
+    pollContext().catch(error => diagnose('context', error)).finally(() => { contextPolling = false; });
+  }
+}, 1000);
+chrome.tabs.onRemoved.addListener(id => {
+  homeHandoffs.delete(id);
+  schedule(async () => {
+  const player = await updatePlayers(all => { const old = all[id]; delete all[id]; return old; });
   if (!player) return;
-  delete all[id]; await chrome.storage.session.set({ players: all });
   await reportPlayer(id, player, true).catch(() => {});
-}).catch(() => {}));
-chrome.tabs.onUpdated.addListener((id, change) => schedule(async () => {
+  }).catch(() => {});
+});
+chrome.tabs.onUpdated.addListener((id, change) => {
   if (!change.url) return;
-  const all = await players(), player = all[id];
+  homeHandoffs.delete(id);
+  schedule(async () => {
+  const player = await updatePlayers(all => { const old = all[id]; delete all[id]; return old; });
   if (!player) return;
-  delete all[id]; await chrome.storage.session.set({ players: all });
   await reportPlayer(id, player, true).catch(() => {});
-}).catch(() => {}));
+  }).catch(() => {});
+});
 
 chrome.commands.onCommand.addListener((command) => {
   if (command === 'bwos-home') goHome();
@@ -383,16 +501,22 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     case 'media-diagnostic':
       if (sender.frameId !== 0 || !/^https:\/\/www\.youtube\.com\//.test(sender.tab?.url || '')) return false;
       bwos('api/playback/diagnostic', { id: String(tabId), service: 'youtube', category: 'player', code: msg.data?.code }).then(reply, () => reply(null)); return true;
-    case 'open-service':
-      schedule(() => openService(msg.url, sender)).then(reply, error => reply({ ok: false, error: error.message }));
+    case 'open-service': {
+      if (sender.frameId !== 0 || !/^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\//.test(sender.tab?.url || '')) {
+        reply({ ok: false, error: 'Open apps from BWOS Home' }); return false;
+      }
+      const intent = beginNavigation(sender.tab?.windowId);
+      schedule(() => openService(msg.url, sender, intent)).then(reply, error => reply({ ok: false, error: error.message }));
       return true;
+    }
     case 'media-intent':
       if (sender.frameId !== 0 || !sender.tab?.url?.startsWith('https://') || !['pause', 'resume', 'toggle', 'stop', 'restart', 'seekForward', 'seekBack', 'nextMedia', 'previousMedia', 'subtitlesOn', 'subtitlesOff'].includes(msg.action)) return false;
+      homeHandoffs.delete(tabId);
       schedule(async () => {
         if (msg.action === 'stop') {
           const all = await players();
           await sendToTab(tabId, { type: 'media-control', action: 'pause' }, all[tabId] ? { frameId: all[tabId].frameId } : undefined).catch(() => {});
-          await returnHome(tabId); await chrome.tabs.remove(tabId); return { ok: true };
+          await goHome(tabId, sender.tab.windowId); await chrome.tabs.remove(tabId); return { ok: true };
         }
         const all = await players();
         const result = await sendToTab(tabId, { type: 'media-control', action: msg.action, value: msg.value || '' }, all[tabId] ? { frameId: all[tabId].frameId } : undefined);
@@ -407,11 +531,11 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       if (sender.frameId !== 0 || !sender.tab?.url?.startsWith('https://')) return false;
       sendToTab(tabId, { type: 'show-keyboard' }, { frameId: 0 }).then(reply, () => reply({ ok: false })); return true;
     case 'media-report':
-      schedule(() => mediaReport(msg, sender)).then(() => reply({ ok: true }), () => reply(null));
+      scheduleMedia(msg, sender).then(() => reply({ ok: true }), () => reply(null));
       return true;
     case 'media-poll':
       if (sender.frameId !== 0 || !sender.tab?.url?.startsWith('http://127.0.0.1:')) return false;
-      schedule(pollPlayback).then(() => reply({ ok: true }), () => reply(null));
+      scheduleOnce('playback', pollPlayback).then(() => reply({ ok: true }), () => reply(null));
       return true;
     case 'progress':
       bwos('api/progress', msg.data).then(reply, () => reply(null));
@@ -434,7 +558,7 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
       if (sender.frameId !== 0) return false;
       bwos('api/browser/error', { message: String(msg.message || '').slice(0, 180) }).then(reply, () => reply(null)); return true;
     case 'home':
-      goHome(tabId).then(reply, () => reply(null));
+      goHome(tabId, sender.tab?.windowId).then(reply, () => reply(null));
       return true;
     case 'key-to-top':
       if (tabId != null && sender.frameId!==0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Enter','Escape',' ','x','p','f','o','m','ContextMenu','F23'].includes(msg.key)) chrome.tabs.sendMessage(tabId, { type: 'key', key: msg.key }, { frameId: 0 }).catch(()=>{});

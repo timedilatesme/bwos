@@ -31,12 +31,13 @@ location.pathname = '/results';
 commands.push({ action: 'youtubeSearch', value: 'a & b # c' });
 await poll();
 const redirected = new URL(navigations[0]);
-assert.equal(redirected.pathname, '/tv', 'Desktop YouTube returns to the TV interface');
-assert.equal(new URLSearchParams(redirected.hash.split('?')[1]).get('q'), 'a & b # c', 'Search punctuation is encoded without injecting URL parameters');
+assert.equal(redirected.pathname, '/results', 'Standard YouTube keeps the working web interface');
+assert.equal(redirected.searchParams.get('search_query'), 'a & b # c', 'Search punctuation is encoded without injecting URL parameters');
+assert.equal([...redirected.searchParams].length, 1, 'A query cannot inject additional parameters');
 
 location.hostname = 'example.com'; location.pathname = '/';
 commands.push({ action: 'search', value: 'A movie' });
 await poll();
 assert.ok(fieldVisible && focused, 'Other services retain search-button and field support');
 assert.deepEqual(typed, ['A movie'], 'Other services use trusted Unicode input');
-console.log('PASS: native TV search, Hindi and punctuation, desktop-to-TV routing, and other-service search');
+console.log('PASS: native TV and web search, Hindi and punctuation, and other-service search');

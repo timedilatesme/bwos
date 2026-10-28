@@ -32,7 +32,7 @@ export class YouTubePlayer {
     this.instructions=h('p.embedded-instructions',null,'A / Cross · Play / pause    ◀ ▶ · Skip 10 s    ↑ / Menu · Controls    Home / Back · Browse');
     this.controls.parentElement.append(this.instructions);
     this.next=h('div.embedded-next',{'aria-live':'polite'});this.controls.parentElement.insertBefore(this.next,this.controls);
-    for (const [action,label] of [['toggle','Play / pause'],['seekBack','−10s'],['seekForward','+10s'],['previousMedia','Previous'],['nextMedia','Next'],['focus','Expand'],['dock','Browse'],['app','Open YouTube TV'],['retry','Retry'],['stop','Close']]) {
+    for (const [action,label] of [['toggle','Play / pause'],['seekBack','−10s'],['seekForward','+10s'],['previousMedia','Previous'],['nextMedia','Next'],['focus','Expand'],['dock','Browse'],['app','Open YouTube'],['retry','Retry'],['stop','Close']]) {
       const button=h('button.btn', {type:'button','data-focus':true,dataset:{kind:'embedded',action,key:'embedded:'+action}},label);
       button.addEventListener('click',event=>{event.stopPropagation();this.showControls(true);focus.set(button);this.control(action).catch(error=>{this.status.textContent=error.message;this.showControls();});});
       this.controls.append(button);

@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
-import {youtubeId,youtubeTvUrl,hubVideos,hubCatalogue,filterVideos} from '../ui/js/media-hub.js';
+import {youtubeId,youtubeTvUrl,youtubeUrl,hubVideos,hubCatalogue,filterVideos} from '../ui/js/media-hub.js';
+for(const input of ['https://www.youtube.com/', 'https://www.youtube.com/tv']) {
+  assert.equal(youtubeUrl(input),'https://www.youtube.com/tv','Old installations retain the TV interface by default');
+  assert.equal(youtubeUrl(input,'web'),'https://www.youtube.com/','Standard remains an explicit fallback');
+}
+assert.equal(youtubeUrl('https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2&t=35','web'),'https://www.youtube.com/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2&t=35');
+assert.equal(youtubeUrl('zTSXiF_cxG8','tv'),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8');
+assert.equal(youtubeUrl('https://www.youtube.com/watch?v=zTSXiF_cxG8&t=evil&secret=drop','web'),'https://www.youtube.com/watch?v=zTSXiF_cxG8');
+for(const input of ['https://youtube.com.evil.test/', 'http://www.youtube.com/', 'https://secret@www.youtube.com/', 'https://www.youtube.com:8080/'])assert.equal(youtubeUrl(input),null);
 for(const link of ['zTSXiF_cxG8','https://youtu.be/zTSXiF_cxG8','https://www.youtube.com/watch?v=zTSXiF_cxG8','https://m.youtube.com/shorts/zTSXiF_cxG8'])assert.equal(youtubeTvUrl(link),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8');
 assert.equal(youtubeTvUrl('https://www.youtube.com/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2&secret=drop'),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2');
 assert.equal(youtubeTvUrl('https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2'),'https://www.youtube.com/tv#/watch?v=zTSXiF_cxG8&list=PL_test-12&index=2');

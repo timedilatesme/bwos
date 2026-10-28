@@ -12,7 +12,7 @@ namespace Bwos
     /// <summary>Wires the services together and implements the HTTP API used by the UI.</summary>
     internal sealed class App
     {
-        public const string Version = "1.8.1";
+        public const string Version = "1.8.2";
         /// <summary>How this PC appears in phones' cast and AirPlay menus.</summary>
         public static readonly string CastName = "BWOS (" + Environment.MachineName + ")";
         private const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -43,6 +43,7 @@ namespace Bwos
         private string launchedKey;        // the game BWOS launched (return to BWOS when it closes)
         private string lastRunningKey;
         private DateTime resumedAt = DateTime.MinValue;
+        private volatile bool stopped;
         public bool Dev;
 
         /// <summary>Set by the tray: quits the app on the UI thread.</summary>
@@ -148,17 +149,21 @@ namespace Bwos
 
         public void Stop()
         {
+            stopped = true;
             if (Gamepad != null) Gamepad.Stop();
             Cast.Shutdown();
             AirPlay.Stop();
             Devices.Stop();
             Voice.Stop();
+            Remote.Stop();
+            Games.Stop();
             Server.Stop();
         }
 
         /// <summary>The controller's home button (or hotkey) was pressed somewhere in Windows.</summary>
         public void OnTrigger(string source)
         {
+            if (stopped) return;
             lock (this)
             {
                 if ((DateTime.UtcNow - lastTrigger).TotalMilliseconds < 700) return;
@@ -238,6 +243,7 @@ namespace Bwos
 
         private void OpenAfterWake(string why)
         {
+            if (stopped) return;
             if (Games.RunningKey != null) return; // a game was left running: it stays in front
             try
             {
@@ -252,7 +258,7 @@ namespace Bwos
 
         private void OnRunningChanged(string key)
         {
-            if (Server == null) return;
+            if (stopped || Server == null) return;
             var d = new Dictionary<string, object>();
             d["key"] = key;
             Server.Broadcast("running", d);
@@ -277,13 +283,14 @@ namespace Bwos
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     Thread.Sleep(1500);
-                    try { Shell.ShowShell(); } catch { }
+                    try { if (!stopped) Shell.ShowShell(); } catch { }
                 });
             }
         }
 
         private void EnqueueVoice(VoiceCommand command)
         {
+            if (stopped) return;
             lock (voiceDispatch)
             {
                 // Do not build an unbounded backlog while a launcher takes foreground time.
@@ -309,6 +316,7 @@ namespace Bwos
 
         private void DispatchVoice(VoiceCommand command)
         {
+            if (stopped) return;
             if (!Config.VoiceEnabled) return;
             // Direct mode never injects into a game or another desktop app, including after a focus change.
             if (Config.VoiceMode == "direct" && !Shell.ShellIsForeground()) return;
@@ -566,6 +574,7 @@ namespace Bwos
             s["voiceEngine"] = Config.VoiceEngine;
             s["voiceReplies"] = Config.VoiceReplies;
             s["controllerBridge"] = Config.ControllerBridge;
+            s["youtubeInterface"] = Config.YouTubeInterface;
             s["showTools"] = Config.ShowTools;
             s["autostart"] = Autostart;
             s["blankAfter"] = Config.BlankAfter;
@@ -609,6 +618,10 @@ namespace Bwos
         {
             switch (key)
             {
+                case "youtubeInterface":
+                    string youtubeInterface = Convert.ToString(value);
+                    if (youtubeInterface != "web" && youtubeInterface != "tv") return WebServer.Err("bad YouTube interface");
+                    Config.Set(key, youtubeInterface); return Ok();
                 case "voiceEnabled":
                     if (!(value is bool)) return WebServer.Err("bad voice toggle");
                     Config.Set(key, value); Voice.Refresh();
@@ -678,12 +691,11 @@ namespace Bwos
                     Shell.CloseShell();
                     return Ok();
                 case "exit":
-                    Shell.CloseShell();
-                    ThreadPool.QueueUserWorkItem(delegate
+                    BackgroundWork.Queue("exit", delegate
                     {
                         Thread.Sleep(300); // let this response reach the UI first
-                        var exit = RequestExit;
-                        if (exit != null) exit();
+                        try { Shell.CloseShell(); }
+                        finally { var exit = RequestExit; if (exit != null) exit(); }
                     });
                     return Ok();
                 case "bigpicture":
@@ -691,7 +703,7 @@ namespace Bwos
                     return Ok();
                 case "sleep":
                     Shell.HideShell();
-                    ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(800); Application.SetSuspendState(PowerState.Suspend, false, false); });
+                    BackgroundWork.Queue("sleep", delegate { Thread.Sleep(800); if (!stopped) Application.SetSuspendState(PowerState.Suspend, false, false); });
                     return Ok();
                 case "restart":
                     Process.Start(new ProcessStartInfo("shutdown.exe", "/r /t 0") { CreateNoWindow = true, UseShellExecute = false });

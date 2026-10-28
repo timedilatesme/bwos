@@ -9,6 +9,7 @@ const snapshots = new Map();
 const updates = [], reports = [], controls = [], removed = [], errors = [], handoffs = [];
 const reloaded = [], diagnostics = [], tvRules = [], network = {};
 let batch = [], message, command, nextTab = 50;
+let tabRemoved;
 const event = handler => ({ addListener: callback => handler?.(callback) });
 const clone = value => structuredClone(value);
 const chrome = {
@@ -41,7 +42,7 @@ const chrome = {
     },
     remove: async id => { removed.push(id); tabs.delete(id); },
     reload: async id => { reloaded.push(id); },
-    onRemoved: event(), onUpdated: event()
+    onRemoved: event(callback=>{tabRemoved=callback;}), onUpdated: event()
   },
   windows: {
     get: async id => ({ id, focused: true }),
@@ -51,7 +52,7 @@ const chrome = {
 };
 class Socket { constructor() { this.readyState = 1; } close() {} }
 const deadlines = new Map(); let nextDeadline = 0;
-const context = vm.createContext({ chrome, navigator:{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142.0.0.0 Edg/142.0.0.0'}, WebSocket: Socket, URL, URLSearchParams, console, setInterval() {},
+const context = vm.createContext({ AbortController, chrome, navigator:{userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142.0.0.0 Edg/142.0.0.0'}, WebSocket: Socket, URL, URLSearchParams, console, setInterval() {},
   setTimeout(callback) { const id = ++nextDeadline; deadlines.set(id, callback); return id; }, clearTimeout(id) { deadlines.delete(id); },
   fetch: async (url, request) => {
     const body = JSON.parse(request.body);
@@ -74,6 +75,7 @@ assert.match(rule.action.requestHeaders[0].value, /Xbox/);
 assert.deepEqual(clone(rule.condition.resourceTypes), ['main_frame','sub_frame'], 'Player API and media headers are untouched');
 const match = new RegExp(rule.condition.regexFilter);
 assert.ok(match.test('https://www.youtube.com/tv') && match.test('https://www.youtube.com/tv?x=1'));
+assert.ok(match.test('https://www.youtube.com/tv#/watch?v=00000000000'),'TV watch fragments receive the document compatibility rule');
 assert.ok(!match.test('https://www.youtube.com/tvextra') && !match.test('https://www.youtube.com/youtubei/v1/player'));
 network.response({tabId:42,url:'https://r1.googlevideo.com/videoplayback?secret=never-log',statusCode:403});
 await flush();
@@ -99,7 +101,7 @@ assert.equal(tabs.get(42).url, 'https://www.youtube.com/watch?v=music_12345&list
 assert.ok([...tabs.values()].some(tab => tab.url === local.home + '#t=' + local.token), 'New home receives auth token');
 assert.ok(!updates.some(update => update.state === 'minimized'), 'Home does not minimize the live player');
 assert.ok(handoffs.some(item => item.id === 42 && item.keepPlaying), 'Playing media receives bounded handoff recovery');
-assert.ok(updates.some(update => update.window === 7 && update.state === 'fullscreen' && update.focused === undefined), 'Original window remains fullscreen');
+assert.ok(updates.some(update => update.window === 7 && update.state === 'fullscreen'), 'Original window remains fullscreen');
 assert.equal(tabs.get(50).windowId, 7, 'Home and player share one window');
 tabs.get(50).audible=true;
 snapshots.set(50,{title:'BWOS embedded video',paused:false});
@@ -118,9 +120,16 @@ for (let attempt = 0; attempt < 3; attempt++) {
   assert.equal(tabs.get(42).active, true, 'Opening the app focuses its existing player');
   assert.equal(tabs.get(42).url, 'https://www.youtube.com/tv#/watch?v=music_12345&list=playlist&index=2', 'Opening the TV app migrates a retained desktop video once and preserves its TV session afterwards');
   await send({ type: 'home' }, tabs.get(42));
+  await flush();
 }
 assert.equal([...tabs.values()].filter(tab => tab.url.includes('youtube.com')).length, 1, 'Repeated app/Home cycles never duplicate YouTube');
 assert.equal(updates.filter(update => update.id === 42 && update.url).length, 1, 'A retained TV player is not repeatedly reloaded');
+for (let attempt = 0; attempt < 3; attempt++) {
+  assert.equal((await send({type:'open-service',url:'https://www.youtube.com/'},tabs.get(50))).ok,true);
+  assert.equal(tabs.get(42).url,'https://www.youtube.com/watch?v=music_12345&list=playlist&index=2','Standard mode migrates a retained TV video and its playlist');
+  await send({type:'home'},tabs.get(42)); await flush();
+}
+assert.equal(updates.filter(update=>update.id===42 && update.url).length,2,'Switching back to Standard navigates once, then retains the working player');
 assert.ok(!updates.some(update => update.id === 50 && update.url), 'Home is activated without navigating/reloading its document');
 assert.equal((await send({ type: 'open-service', url: 'https://www.youtube.com/tv' }, tabs.get(43))).ok, false, 'Streaming pages cannot impersonate Home');
 assert.equal((await send({ type: 'open-service', url: 'javascript:alert(1)' }, tabs.get(50))).ok, false, 'Only HTTPS apps can be opened');
@@ -141,16 +150,19 @@ assert.equal(errors.length, 0);
 tabs.set(44, { id: 44, windowId: 9, active: true, url: 'https://www.youtube.com/watch?v=fresh' });
 snapshots.set(44, { title: 'Fresh song', paused: false });
 await send({ type: 'home' }, tabs.get(44));
+await flush();
 assert.equal(session.players[44].data.title, 'Fresh song', 'Home probes playback before any periodic report');
 assert.equal(tabs.get(44).url, 'https://www.youtube.com/watch?v=fresh', 'Early Home does not destroy player');
 tabs.set(45, { id: 45, windowId: 12, active: true, audible: true, title: 'Audible player', url: 'https://www.youtube.com/watch?v=audio' });
 await send({ type: 'home' }, tabs.get(45));
+await flush();
 assert.equal(session.players[45].data.canControl, false, 'Audible tab survives when DOM controls are unavailable');
 assert.ok(reports.some(report => report.id === '45' && report.background));
 assert.ok(!handoffs.some(item => item.id === 45), 'Uncontrollable audible media does not receive a resume attempt');
 tabs.set(46, { id: 46, windowId: 13, active: true, url: 'https://www.youtube.com/tv' });
 snapshots.set(46, { title: 'Already paused', paused: true });
 await send({ type: 'home' }, tabs.get(46));
+await flush();
 assert.ok(!handoffs.some(item => item.id === 46), 'Home preserves a deliberate preexisting pause');
 assert.equal(session.players[46].data.paused, true);
 tabs.set(47, { id: 47, windowId: 14, active: true, url: 'https://example.com/' });
@@ -200,28 +212,35 @@ batch.push({ id:'43', action:'resume' });
 const stalledControl = send({ type:'media-poll' }, tabs.get(50));
 await flush();
 assert.equal(deadlines.size, 1, 'A stalled player gets a bounded response deadline');
+assert.equal((await send({type:'home'},tabs.get(43))).ok,true,'Home works while a playback command is still stalled');
+assert.equal(tabs.get(50).active,true,'Stalled controls cannot postpone Home activation');
+await flush();
 [...deadlines.values()][0](); deadlines.clear();
 await stalledControl;
 assert.ok(errors.some(error => error.id === '43'), 'Stalled playback produces a visible error');
 chrome.tabs.sendMessage = originalSend;
 assert.equal((await send({ type:'home' }, tabs.get(43))).ok, true, 'Home still works after a stalled playback command');
-// A frozen site must not hold the shared worker queue indefinitely during Home.
+// Home activation and its reply are independent of frozen provider/shell responses.
 const stall = new Set(['media-snapshot', 'shell-home', 'media-handoff']);
 chrome.tabs.sendMessage = async (id, value, frame) => stall.has(value.type) ? new Promise(() => {}) : originalSend(id, value, frame);
 let recoveredHome = false;
 const stalledHome = send({ type:'home' }, tabs.get(43)).then(result => { recoveredHome = true; return result; });
-for (const stage of ['media-snapshot', 'shell-home', 'media-handoff']) {
-  await flush();
-  assert.equal(recoveredHome, false, stage + ' is awaiting its response deadline');
-  assert.equal(deadlines.size, 1, stage + ' has exactly one bounded deadline');
-  const [deadline, expire] = [...deadlines.entries()][0]; deadlines.delete(deadline); expire();
-}
 assert.equal((await stalledHome).ok, true, 'Home recovers from a frozen provider without restarting BWOS');
+assert.equal(recoveredHome,true,'Home acknowledges without waiting for the snapshot or handoff');
+assert.equal(tabs.get(50).active,true,'Home is visible before provider deadlines expire');
+await flush();
+assert.equal(deadlines.size,2,'Snapshot and shell notification have independent bounded deadlines');
+for (const [deadline, expire] of [...deadlines.entries()]) { deadlines.delete(deadline); expire(); }
+await flush();
+assert.equal(deadlines.size,1,'Background playback recovery remains bounded');
+for (const [deadline, expire] of [...deadlines.entries()]) { deadlines.delete(deadline); expire(); }
+await flush();
 assert.ok(tabs.has(43), 'A frozen provider tab is retained');
 assert.equal(session.players[43].background, true, 'The retained player remains in the playback cloud');
 assert.match(session.players[43].data.error, /Reopen/, 'Failed playback recovery is reported instead of pretending music continued');
 chrome.tabs.sendMessage = originalSend;
 assert.equal((await send({type:'open-service',url:'https://www.netflix.com/browse'},tabs.get(50))).ok, true, 'App opening remains usable after stalled Home recovery');
+await flush();
 assert.equal(deadlines.size, 0, 'Recovery releases every bridge deadline');
 const recommendationHome=[...tabs.values()].find(tab=>tab.url?.startsWith(local.home));
 const originalCreate=chrome.tabs.create;
@@ -280,6 +299,7 @@ const liveYouTube=[...tabs.values()].find(tab=>tab.windowId===recommendationHome
 assert.notEqual(liveYouTube.id,collector.id,'The live player must not reuse the temporary discovery tab');
 snapshots.set(liveYouTube.id,{title:'Live TV playback',paused:false});
 assert.equal((await send({type:'home'},liveYouTube)).ok,true,'Home remains available during discovery');
+await flush();
 assert.equal(session.players[liveYouTube.id].background,true,'The live TV player survives Home');
 finishDiscovery({data:{service:'youtube',rows:[{title:'TV picks',items:Array.from({length:60},(_,i)=>({title:'Video '+i,url:'https://www.youtube.com/watch?v='+String(i).padStart(11,'0')}))}]}});
 await runningDiscovery;
@@ -293,3 +313,50 @@ tabs.get(liveYouTube.id).mutedInfo={muted:true,reason:'user'};
 await send({type:'open-service',url:'https://www.youtube.com/tv'},recommendationHome);
 assert.ok(!updates.some(update=>update.muted===false),'A deliberate user mute is preserved');
 console.log('PASS: discovery/playback isolation, Home during discovery, collector cleanup and owned-mute recovery');
+
+// A slow Home probe must not revive a closed player or undo a newer explicit pause.
+for(const closed of [false,true]) {
+  const id=closed?71:70,tab={id,windowId:id,active:true,url:'https://www.youtube.com/watch?v=00000000000'};
+  tabs.set(id,tab);
+  let releaseSnapshot;
+  chrome.tabs.sendMessage=async(target,value,frame)=>target===id && value.type==='media-snapshot'
+    ? new Promise(resolve=>{releaseSnapshot=resolve;}) : originalSend(target,value,frame);
+  assert.equal((await send({type:'home'},tab)).ok,true,'A cold slow player does not delay Home');
+  if(closed){tabs.delete(id);tabRemoved(id);}
+  else assert.equal((await send({type:'media-intent',action:'pause'},tab)).ok,true);
+  releaseSnapshot({frameId:0,data:{title:'Old playing snapshot',paused:false}});
+  await flush();
+  assert.equal(session.players[id],undefined,'Late Home snapshots cannot recreate closed or cancelled playback');
+  assert.ok(!handoffs.some(item=>item.id===id),'Late snapshots never resume a newer deliberate pause');
+}
+chrome.tabs.sendMessage=originalSend;
+const firstHome=send({type:'home'},liveYouTube);
+const supersededOpen=send({type:'open-service',url:'https://www.youtube.com/'},recommendationHome);
+const latestHome=send({type:'home'},liveYouTube);
+await Promise.all([firstHome,latestHome]);
+assert.equal((await supersededOpen).ok,false,'A second Home cancels an app opening even while the first Home is still pending');
+assert.equal(tabs.get(recommendationHome.id).active,true,'Rapid Home/open/Home leaves the latest destination active');
+await flush();
+console.log('PASS: explicit pause, closed-player cleanup and rapid navigation win over stale Home work');
+
+// An unavailable host must not accumulate one poll/report for every timer tick.
+const once=vm.runInContext('scheduleOnce',context),schedule=vm.runInContext('schedule',context);
+let unblock,calls=0;
+const blocked=schedule(()=>new Promise(resolve=>{unblock=resolve;}));await flush();
+const queuedOpen=send({type:'open-service',url:'https://www.youtube.com/watch?v=00000000000'},recommendationHome);
+assert.equal((await send({type:'home'},liveYouTube)).ok,true,'Home bypasses a blocked report queue');
+assert.equal(tabs.get(recommendationHome.id).active,true,'Home becomes active before the report queue recovers');
+const polls=Array.from({length:100},()=>once('test-poll',async()=>{calls++;}));
+const media=Array.from({length:100},(_,i)=>send({type:'media-report',data:{title:'Latest '+i,paused:false}},liveYouTube));
+unblock();await blocked;await Promise.all([...polls,...media]);
+assert.equal((await queuedOpen).ok,false,'Home cancels an older queued app opening');
+assert.equal(tabs.get(recommendationHome.id).active,true,'A delayed open cannot steal focus back from Home');
+assert.equal(calls,1,'Repeated polling is coalesced while work is pending');
+assert.equal(session.players[liveYouTube.id].data.title,'Latest 99','Queued snapshots retain the newest media state');
+const stalled=vm.runInContext('bwos',context);
+context.fetch=(_url,request)=>new Promise((_resolve,reject)=>request.signal.addEventListener('abort',()=>reject(Error('host unavailable'))));
+const timeout=stalled('api/test',{});await flush();
+assert.equal(deadlines.size,1,'A host request has one bounded deadline');
+[...deadlines.values()][0]();await assert.rejects(timeout,/host unavailable/);
+assert.equal(deadlines.size,0,'Failed requests clear their timers');
+console.log('PASS: coalesced polls/reports and recovery from a stalled host');

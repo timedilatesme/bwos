@@ -12,7 +12,7 @@
       ]
     },
     "condition": {
-      "regexFilter": "^https://www\\.youtube\\.com/tv(?:[/?]|$)",
+      "regexFilter": "^https://www\\.youtube\\.com/tv(?:[/?#]|$)",
       "resourceTypes": ["main_frame", "sub_frame"]
     }
   }

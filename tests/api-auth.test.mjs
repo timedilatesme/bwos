@@ -6,7 +6,7 @@ const key='11111111111111111111111111111111';
 const storage=new Map(), requests=[];
 function load(href) {
   const location=new URL(href);
-  const context=vm.createContext({location,URL,URLSearchParams,
+  const context=vm.createContext({location,URL,URLSearchParams,AbortController,setTimeout,clearTimeout,
     sessionStorage:{setItem:(k,v)=>storage.set(k,v),getItem:k=>storage.get(k)},
     history:{state:null,replaceState:(_state,_title,url)=>{location.href=String(url);}},
     fetch:async(path,options)=>{requests.push({path,options});return {ok:true,json:async()=>({ok:true})};}});

@@ -6,8 +6,11 @@ const received=new MediaStream();
 const code=new URLSearchParams(location.hash.slice(1)).get('code') || '';
 history.replaceState(null,'',location.pathname);
 async function call(action,body={}) {
-  const response=await fetch('/v/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-BWOS-Remote':token},body:JSON.stringify(body),keepalive:action==='leave'});
-  const data=await response.json();if(!response.ok || data.ok===false){const error=Error(data.error || 'Connection unavailable');error.rejected=true;throw error;}return data;
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+  try {
+    const response=await fetch('/v/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-BWOS-Remote':token},body:JSON.stringify(body),keepalive:action==='leave',signal:controller.signal});
+    const data=await response.json();if(!response.ok || data.ok===false){const error=Error(data.error || 'Connection unavailable');error.rejected=true;throw error;}return data;
+  } finally {clearTimeout(timer);}
 }
 function status(text){$('#status').textContent=text;}
 function disconnect(message='Disconnected. Start a new sharing session on your PC to reconnect.') {
@@ -35,7 +38,8 @@ $('#connect').addEventListener('click',async()=>{
       if(track.kind==='audio')$('#sound').disabled=false;
     },state:state=>{status(state==='connected'?'Live · '+(received.getAudioTracks().length?'audio available':'screen only'):state==='failed'?'Connection failed. Check that both devices are on the same LAN.':state==='disconnected'?'Connection interrupted…':'Connecting…');},failed:error=>disconnect(error.message)});
     $('#sound').disabled=true;$('#welcome').hidden=true;$('#toolbar').hidden=false;$('#hint').hidden=false;poll();
-  } catch(error){$('#message').textContent=error.message;}
+  } catch(error){$('#message').textContent=error.message;$('#connect').disabled=!code;}
+  finally {polling=false;}
 });
 $('#disconnect').addEventListener('click',()=>disconnect());
 $('#sound').addEventListener('click',async()=>{video.muted=!video.muted;try{await video.play();$('#sound').textContent=video.muted?'Enable sound':'Mute';}catch{video.muted=true;status('Select Enable sound again to allow playback.');}});

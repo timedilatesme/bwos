@@ -20,7 +20,9 @@ export const focus = {
   move,
   remembered(group) {
     const el = memory.get(group);
-    return el && el.isConnected ? el : null;
+    if (el && el.isConnected) return el;
+    memory.delete(group);
+    return null;
   },
   forget(group) { memory.delete(group); },
   ensureVisible
@@ -28,6 +30,7 @@ export const focus = {
 
 function visible(el) {
   if (!el.isConnected || el.offsetParent === null) return false;
+  if (el.closest('[hidden], [inert]')) return false;
   const closed=el.closest('details:not([open])');
   if(closed && !closed.querySelector(':scope > summary')?.contains(el))return false;
   if (el.disabled || getComputedStyle(el).visibility==='hidden') return false;
@@ -65,7 +68,7 @@ function set(el, opts = {}) {
 
 /** Returns true if focus moved. */
 function move(dir) {
-  const from = current && current.isConnected && visible(current) ? current : null;
+  const from = current && scopeFn().contains(current) && visible(current) ? current : null;
   if (!from) {
     const first = focusables()[0];
     if (first) set(first, { dir });
@@ -112,7 +115,7 @@ function rowMove(from, row, dir) {
   if (dir === 'left') return i > 0 ? items[i - 1] : 'edge';
   if (dir === 'right') return i < items.length - 1 ? items[i + 1] : 'edge';
 
-  const rows = $$('.row', row.parentElement).filter((r) => r.querySelector('[data-focus]'));
+  const rows = $$('.row', row.parentElement).filter((r) => $$('[data-focus]', r).some(visible));
   const ri = rows.indexOf(row);
   const next = rows[ri + (dir === 'down' ? 1 : -1)];
   if (!next) {

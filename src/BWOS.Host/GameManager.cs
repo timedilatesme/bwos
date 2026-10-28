@@ -17,6 +17,7 @@ namespace Bwos
         private DateTime launchedAt;
         private bool sawRunning;
         private string lastRunningKey;
+        private volatile bool stopped;
 
         /// <summary>Raised with (key or null) when the running game changes.</summary>
         public event Action<string> RunningChanged;
@@ -51,6 +52,8 @@ namespace Bwos
         {
             get { return lastRunningKey; }
         }
+
+        public void Stop() { stopped = true; }
 
         public bool Resume()
         {
@@ -100,7 +103,7 @@ namespace Bwos
 
         private void Watch()
         {
-            while (true)
+            while (!stopped)
             {
                 try
                 {

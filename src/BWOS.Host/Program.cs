@@ -25,7 +25,7 @@ namespace Bwos
                     if (!background)
                     {
                         EventWaitHandle ev;
-                        if (EventWaitHandle.TryOpenExisting(ShowEventName, out ev)) ev.Set();
+                        if (EventWaitHandle.TryOpenExisting(ShowEventName, out ev)) using (ev) ev.Set();
                     }
                     return;
                 }
@@ -63,12 +63,12 @@ namespace Bwos
 
                 using (var tray = new TrayContext(app))
                 using (var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName))
+                using (var stopEvent = new ManualResetEvent(false))
                 {
                     var waiter = new Thread(delegate()
                     {
-                        while (true)
+                        while (WaitHandle.WaitAny(new WaitHandle[] { stopEvent, showEvent }) == 1)
                         {
-                            showEvent.WaitOne();
                             try { app.Shell.ShowShell(); } catch (Exception ex) { Log.Write("show failed: " + ex.Message); }
                         }
                     });
@@ -81,9 +81,9 @@ namespace Bwos
                             try { app.Shell.ShowShell(); } catch (Exception ex) { Log.Write("show failed: " + ex.Message); }
                         });
 
-                    Application.Run(tray);
+                    try { Application.Run(tray); }
+                    finally { stopEvent.Set(); waiter.Join(); app.Stop(); }
                 }
-                app.Stop();
             }
         }
     }
@@ -127,7 +127,7 @@ namespace Bwos
             SystemEvents.SessionSwitch += sessionSwitched;
 
             var menu = new ContextMenuStrip();
-            var open = new ToolStripMenuItem("Open BWOS", null, delegate { ThreadPool.QueueUserWorkItem(delegate { app.Shell.ShowShell(); }); });
+            var open = new ToolStripMenuItem("Open BWOS", null, delegate { BackgroundWork.Queue("open shell", delegate { app.Shell.ShowShell(); }); });
             open.Font = new Font(open.Font, FontStyle.Bold);
             menu.Items.Add(open);
             menu.Items.Add(new ToolStripSeparator());
@@ -137,7 +137,7 @@ namespace Bwos
                 autostartItem.Checked = app.Autostart;
             });
             menu.Items.Add(autostartItem);
-            menu.Items.Add(new ToolStripMenuItem("Rescan game library", null, delegate { ThreadPool.QueueUserWorkItem(delegate { app.Library.Refresh(); }); }));
+            menu.Items.Add(new ToolStripMenuItem("Rescan game library", null, delegate { BackgroundWork.Queue("library refresh", delegate { app.Library.Refresh(); }); }));
             menu.Items.Add(new ToolStripMenuItem("Open settings folder", null, delegate { Process.Start("explorer.exe", "\"" + Paths.DataDir + "\""); }));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Exit BWOS", null, delegate
@@ -152,7 +152,7 @@ namespace Bwos
             catch { icon.Icon = SystemIcons.Application; }
             icon.Text = "BWOS – press the controller's home button";
             icon.ContextMenuStrip = menu;
-            icon.DoubleClick += delegate { ThreadPool.QueueUserWorkItem(delegate { app.Shell.ShowShell(); }); };
+            icon.DoubleClick += delegate { BackgroundWork.Queue("open shell", delegate { app.Shell.ShowShell(); }); };
             icon.Visible = true;
         }
 
@@ -172,4 +172,5 @@ namespace Bwos
             base.Dispose(disposing);
         }
     }
+
 }

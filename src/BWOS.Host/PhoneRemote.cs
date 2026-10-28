@@ -36,6 +36,7 @@ namespace Bwos
         private readonly string store = Path.Combine(Paths.DataDir, "phones.json");
         private List<Dictionary<string, object>> phones;
         private TcpListener listener;
+        private bool stopped;
         private string code;
         private DateTime codeIssued;
         internal readonly ScreenStream Screen = new ScreenStream();
@@ -69,6 +70,17 @@ namespace Bwos
 
         public int PairedCount { get { lock (gate) return phones.Count; } }
 
+        public void Stop()
+        {
+            lock (gate)
+            {
+                stopped = true;
+                Screen.Stop();
+                if (listener != null) listener.Stop();
+                listener = null;
+            }
+        }
+
         /// <summary>At start-up: paired phones should work without scanning again.</summary>
         public void StartIfPaired()
         {
@@ -100,25 +112,26 @@ namespace Bwos
 
         private void EnsureListening()
         {
+            if (stopped) throw new ObjectDisposedException("Phone remote");
             if (listener != null) return;
             // All interfaces, so a phone on the same Wi-Fi can connect. Windows may ask once to allow BWOS.
             var pendingListener = new TcpListener(IPAddress.Any, port);
             try { pendingListener.Start(); }
             catch { pendingListener.Stop(); throw; }
             listener = pendingListener; // A failed bind must remain retryable.
-            var t = new Thread(AcceptLoop);
+            var t = new Thread(delegate() { AcceptLoop(pendingListener); });
             t.IsBackground = true;
             t.Name = "BWOS phone remote";
             t.Start();
             Log.Write("phone remote listening on port " + port);
         }
 
-        private void AcceptLoop()
+        private void AcceptLoop(TcpListener source)
         {
             while (true)
             {
                 TcpClient client;
-                try { client = listener.AcceptTcpClient(); }
+                try { client = source.AcceptTcpClient(); }
                 catch { return; }
                 ThreadPool.QueueUserWorkItem(delegate
                 {

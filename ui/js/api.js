@@ -20,15 +20,23 @@ const token = (() => {
 export const standalone = location.protocol === 'file:' || !token;
 
 async function call(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: { 'X-BWOS-Token': token, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-    keepalive: path==='/api/stream/stop'
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || data.ok === false) {const error=new Error(data.error || `Request failed (${res.status})`);error.rejected=true;throw error;}
-  return data;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { 'X-BWOS-Token': token, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+      keepalive: path==='/api/stream/stop'
+    });
+    const data = await res.json();
+    if (!res.ok || data?.ok === false) {const error=new Error(data?.error || `Request failed (${res.status})`);error.rejected=true;throw error;}
+    return data;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('BWOS service did not respond. Try again.');
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 
 export const api = {

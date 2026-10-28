@@ -1,0 +1,49 @@
+name: Windows checks
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stability:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Host and communication checks
+        run: |
+          .\tools\test-features.ps1
+          .\tools\test-features.ps1 -PlaybackSocket
+          .\tools\test-features.ps1 -StreamHttp
+          .\tools\test-features.ps1 -Lifecycle
+      - name: JavaScript regressions
+        run: |
+          $tests = @(Get-ChildItem tests/*.test.mjs | ForEach-Object FullName)
+          node --test @tests
+          if ($LASTEXITCODE -ne 0) { throw 'JavaScript regressions failed.' }
+      - name: Isolated browser regressions
+        run: |
+          npm install --prefix dist/test-deps --no-save --package-lock=false playwright@1.62.1
+          if ($LASTEXITCODE -ne 0) { throw 'Browser test dependency setup failed.' }
+          $env:NODE_PATH = Join-Path $PWD 'dist/test-deps/node_modules'
+          node tests/ui-stability.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Browser regressions failed.' }
+      - name: Build default app
+        run: .\build.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stability-screenshots
+          path: dist/verification/stability
+          if-no-files-found: ignore

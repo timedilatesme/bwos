@@ -23,6 +23,7 @@ namespace Bwos
         private readonly bool guideSupported;
         private readonly ushort[] previous = new ushort[4];
         private readonly bool[] connected = new bool[4];
+        private readonly DateTime[] nextProbe = new DateTime[4];
         private readonly DateTime[] backHeldSince = new DateTime[4];
         private readonly bool[] backHoldFired = new bool[4];
         private DateTime lastTrigger = DateTime.MinValue;
@@ -59,6 +60,7 @@ namespace Bwos
 
         public void Start()
         {
+            if (running) return;
             running = true;
             thread = new Thread(Loop);
             thread.IsBackground = true;
@@ -70,6 +72,7 @@ namespace Bwos
         public void Stop()
         {
             running = false;
+            if (thread != null && thread != Thread.CurrentThread) thread.Join(500);
         }
 
         public List<Dictionary<string, object>> Describe()
@@ -100,14 +103,13 @@ namespace Bwos
 
         private void Loop()
         {
-            int idleSlots = 0;
             while (running)
             {
                 bool any = false;
                 for (int i = 0; i < 4; i++)
                 {
                     // Polling empty slots is expensive in XInput; probe them only every ~1s.
-                    if (!connected[i] && idleSlots % 120 != 0) continue;
+                    if (!ProbeDue(connected[i], DateTime.UtcNow, ref nextProbe[i])) continue;
 
                     XInputState st;
                     bool ok = getState((uint)i, out st) == 0;
@@ -115,9 +117,11 @@ namespace Bwos
                     {
                         connected[i] = ok;
                         previous[i] = 0;
+                        backHeldSince[i] = DateTime.MinValue;
+                        backHoldFired[i] = false;
                         var cc = ConnectionChanged;
                         int slot = i; // C# 5 for-loop variables are shared by closures
-                        if (cc != null) ThreadPool.QueueUserWorkItem(delegate { cc(slot, ok); });
+                        if (cc != null) BackgroundWork.Queue("controller connection", delegate { cc(slot, ok); });
                     }
                     if (!ok) continue;
                     any = true;
@@ -132,7 +136,6 @@ namespace Bwos
                     }
                     previous[i] = now;
                 }
-                idleSlots++;
                 Thread.Sleep(any ? 8 : 50);
             }
         }
@@ -157,20 +160,29 @@ namespace Bwos
                 bool backOnly = (now & ~XButtons.Guide & 0xFFFF) == XButtons.Back;
                 if (backOnly)
                 {
-                    if ((prev & XButtons.Back) == 0) { backHeldSince[slot] = DateTime.UtcNow; backHoldFired[slot] = false; }
+                    if (backHeldSince[slot] == DateTime.MinValue) { backHeldSince[slot] = DateTime.UtcNow; backHoldFired[slot] = false; }
                     else if (!backHoldFired[slot] && (DateTime.UtcNow - backHeldSince[slot]).TotalMilliseconds > 700)
                     {
                         backHoldFired[slot] = true;
                         fire = true;
                     }
                 }
+                else { backHeldSince[slot] = DateTime.MinValue; backHoldFired[slot] = false; }
             }
 
             if (!fire) return;
             if ((DateTime.UtcNow - lastTrigger).TotalMilliseconds < 700) return;
             lastTrigger = DateTime.UtcNow;
             var t = Triggered;
-            if (t != null) ThreadPool.QueueUserWorkItem(delegate { t(); });
+            if (t != null) BackgroundWork.Queue("controller home", delegate { t(); });
+        }
+
+        internal static bool ProbeDue(bool isConnected, DateTime now, ref DateTime next)
+        {
+            if (isConnected) return true;
+            if (now < next) return false;
+            next = now.AddSeconds(1);
+            return true;
         }
 
         public static bool Pressed(ushort now, ushort prev, ushort mask)

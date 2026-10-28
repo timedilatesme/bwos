@@ -98,7 +98,7 @@
         // (KEYBOARD_DEEPLINK). Keep results in Leanback, without DOM/keypad guessing.
         const route = '#/search?q=' + encodeURIComponent(query) + '&bwos-request=' + Date.now();
         if (location.hostname === 'www.youtube.com' && location.pathname.startsWith('/tv')) location.hash = route;
-        else location.assign('https://www.youtube.com/tv' + route);
+        else location.assign('https://www.youtube.com/results?search_query=' + encodeURIComponent(query));
         return;
       }
       for (let i = 0; i < 20; i++) {

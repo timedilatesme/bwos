@@ -89,11 +89,19 @@ namespace Bwos
             var sb = new StringBuilder();
             int indent = 0;
             bool inString = false;
+            bool escaped = false;
             for (int i = 0; i < json.Length; i++)
             {
                 char c = json[i];
-                if (c == '"' && (i == 0 || json[i - 1] != '\\' || (i > 1 && json[i - 2] == '\\'))) inString = !inString;
-                if (inString) { sb.Append(c); continue; }
+                if (inString)
+                {
+                    sb.Append(c);
+                    if (escaped) escaped = false;
+                    else if (c == '\\') escaped = true;
+                    else if (c == '"') inString = false;
+                    continue;
+                }
+                if (c == '"') { inString = true; sb.Append(c); continue; }
                 switch (c)
                 {
                     case '{':
@@ -238,13 +246,14 @@ namespace Bwos
         {
             lock (gate)
             {
-                File.WriteAllText(Paths.ConfigFile, Json.Pretty(Json.Serialize(data)), new UTF8Encoding(false));
+                AtomicFile.WriteText(Paths.ConfigFile, Json.Pretty(Json.Serialize(data)));
             }
         }
 
         public int Port { get { lock (gate) return Json.Int(data, "port", 47913); } }
         public string Trigger { get { lock (gate) return Json.Str(data, "trigger", "guide"); } }
         public bool ControllerBridge { get { lock (gate) return Json.Bool(data, "controllerBridge", true); } }
+        public string YouTubeInterface { get { lock (gate) return Json.Str(data, "youtubeInterface", "tv") == "web" ? "web" : "tv"; } }
         public bool ShowTools { get { lock (gate) return Json.Bool(data, "showTools", false); } }
         /// <summary>Minutes without input before the BWOS screen fades to black (0 = never).</summary>
         public int BlankAfter { get { lock (gate) return Json.Int(data, "blankAfter", 10); } }
@@ -324,6 +333,7 @@ namespace Bwos
   ""port"": 47913,
   ""trigger"": ""guide"",
   ""controllerBridge"": true,
+  ""youtubeInterface"": ""tv"",
   ""showTools"": false,
   ""blankAfter"": 10,
   ""standbyAfter"": 0,

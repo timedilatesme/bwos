@@ -85,7 +85,7 @@ namespace Bwos
             {
                 Log.Write("now watching: " + title + " on " + (app ?? HostOf(url)));
                 // Look the show up once for proper artwork and to seed "Because you watched".
-                ThreadPool.QueueUserWorkItem(delegate
+                BackgroundWork.Queue("watch history lookup", delegate
                 {
                     var match = catalog.Match(title);
                     if (match != null)
@@ -149,18 +149,18 @@ namespace Bwos
 
         private void Save(bool force)
         {
-            if (!force && (DateTime.UtcNow - lastSave).TotalSeconds < 30) { Notify(); return; }
-            lastSave = DateTime.UtcNow;
             try
             {
-                string text;
                 lock (gate)
                 {
-                    var root = new Dictionary<string, object>();
-                    root["entries"] = entries;
-                    text = Json.Pretty(Json.Serialize(root));
+                    if (force || (DateTime.UtcNow - lastSave).TotalSeconds >= 30)
+                    {
+                        var root = new Dictionary<string, object>();
+                        root["entries"] = entries;
+                        AtomicFile.WriteText(FilePath, Json.Pretty(Json.Serialize(root)));
+                        lastSave = DateTime.UtcNow;
+                    }
                 }
-                File.WriteAllText(FilePath, text, new UTF8Encoding(false));
             }
             catch (Exception ex) { Log.Write("watching.json save failed: " + ex.Message); }
             Notify();
@@ -210,7 +210,12 @@ namespace Bwos
         {
             object v;
             if (d == null || !d.TryGetValue(key, out v) || v == null) return 0;
-            try { return Convert.ToDouble(v, System.Globalization.CultureInfo.InvariantCulture); } catch { return 0; }
+            try
+            {
+                double value = Convert.ToDouble(v, System.Globalization.CultureInfo.InvariantCulture);
+                return double.IsNaN(value) || double.IsInfinity(value) ? 0 : Math.Max(0, Math.Min(31536000, value));
+            }
+            catch { return 0; }
         }
 
         private static long Now()

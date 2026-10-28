@@ -1,7 +1,7 @@
 <# Default tests never capture the microphone, launch games, or change Bluetooth connections.
    -InstallVoice downloads optional assets. -Audio uses generated English speech.
    -Devices reads hardware inventory. -Microphone probes live capture for six seconds without saving audio. #>
-param([switch]$InstallVoice, [switch]$Audio, [switch]$Devices, [switch]$Whisper, [switch]$Cpu, [switch]$PlaybackSocket, [switch]$Microphone, [switch]$StreamHttp)
+param([switch]$InstallVoice, [switch]$Audio, [switch]$Devices, [switch]$Whisper, [switch]$Cpu, [switch]$PlaybackSocket, [switch]$Microphone, [switch]$StreamHttp, [switch]$Lifecycle)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $testOutput = Join-Path $projectRoot 'dist\verification'
@@ -22,5 +22,6 @@ if ($Cpu) { $testArguments += '--cpu' }
 if ($PlaybackSocket) { $testArguments += '--websocket' }
 if ($Microphone) { $testArguments += '--microphone' }
 if ($StreamHttp) { $testArguments += '--stream-http' }
+if ($Lifecycle) { $testArguments += '--lifecycle' }
 & $testExe @testArguments
 if ($LASTEXITCODE -ne 0) { throw 'Feature tests failed' }

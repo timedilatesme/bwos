@@ -10,7 +10,7 @@ const AXIS = 0.55;
 
 const listeners = new Set();
 const state = new Map();      // gamepad index -> { buttons:[], dir, next, interval }
-let lastPadInput = 0;
+let lastPadInput = -Infinity;
 let lastAny = performance.now();
 let family = 'xbox';          // glyph style of the most recently used controller
 let swapAB = false;
@@ -21,18 +21,22 @@ export const input = {
   // Phone input uses the same semantic listeners and focus engine as the controller.
   async dispatch(action, source = 'remote') {
     lastAny = performance.now();
-    await Promise.all(Array.from(listeners, fn => fn(action, source)));
+    await Promise.all(Array.from(listeners, fn => Promise.resolve().then(() => fn(action, source))));
   },
   get family() { return family; },
   get idleMs() { return performance.now() - lastAny; },
   get swapAB() { return swapAB; },
   set swapAB(v) { swapAB = v; try { localStorage.setItem('bwos.swapAB', v ? '1' : '0'); } catch {} },
-  padCount() { return Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean).length; }
+  padCount() { return Array.from(gamepads()).filter(pad => pad?.connected).length; }
 };
 
+function gamepads() {
+  try { return navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch { return []; }
+}
 function emit(action, source) {
-  lastAny = performance.now();
-  for (const fn of listeners) fn(action, source);
+  // A failed async handler must not stop polling or become an unhandled rejection.
+  input.dispatch(action, source).catch(error => console.error('BWOS input failed:', error));
 }
 
 function familyOf(pad) {
@@ -81,7 +85,9 @@ const BUTTONS = { 0: 'accept', 1: 'back', 2: 'secondary', 3: 'options', 4: 'prev
 
 function poll() {
   requestAnimationFrame(poll);
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pads = gamepads();
+  const connected = new Set(Array.from(pads).filter(pad => pad?.connected).map(pad => pad.index));
+  for (const index of state.keys()) if (!connected.has(index)) state.delete(index);
   // Never react while BWOS is in the background (a game has focus).
   const focused = document.hasFocus() && !document.hidden;
   const now = performance.now();
@@ -129,10 +135,12 @@ requestAnimationFrame(poll);
 
 window.addEventListener('gamepadconnected', (e) => {
   family = familyOf(e.gamepad);
-  for (const fn of listeners) fn('padconnected', 'pad');
+  state.delete(e.gamepad.index);
+  emit('padconnected', 'pad');
 });
-window.addEventListener('gamepaddisconnected', () => {
-  for (const fn of listeners) fn('paddisconnected', 'pad');
+window.addEventListener('gamepaddisconnected', (e) => {
+  state.delete(e.gamepad.index);
+  emit('paddisconnected', 'pad');
 });
 
 // Keyboard. If a pad was used a moment ago, ignore synthetic keys that Steam's
@@ -144,6 +152,7 @@ const KEYS = {
   o: 'options', ContextMenu: 'options', x: 'secondary', p: 'playPause', m: 'menu', Home: 'home'
 };
 window.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
   // In a text box, keys type; only Enter, Escape and up/down still navigate.
   const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
   if (typing && !['Enter', 'Escape', 'ArrowUp', 'ArrowDown'].includes(e.key)) return;
@@ -167,4 +176,4 @@ window.addEventListener('mousemove', () => {
   clearTimeout(cursorTimer);
   cursorTimer = setTimeout(() => document.body.classList.add('hide-cursor'), 2500);
 });
-input.on((a, src) => { if (src.startsWith('pad') || src.startsWith('key')) document.body.classList.add('hide-cursor'); });
+input.on((a, src) => { if (src.startsWith('pad') || src.startsWith('key') || src === 'remote' || src === 'voice') document.body.classList.add('hide-cursor'); });

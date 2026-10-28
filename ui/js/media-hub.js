@@ -43,6 +43,27 @@ export function youtubeTvUrl(input) {
   }catch{ /* A plain video ID needs no extra parameters. */ }
   return 'https://www.youtube.com/tv#/watch?'+watch;
 }
+// Keep the TV layout by default; Standard remains an explicit playback fallback.
+// Phone pairing is handled separately by the host.
+export function youtubeUrl(input, mode='tv') {
+  const tv=youtubeTvUrl(input);
+  if(tv) {
+    if(mode!=='web')return tv;
+    const query=new URLSearchParams(tv.split('?')[1]);
+    try {
+      const url=new URL(input),source=url.pathname.startsWith('/tv')?new URLSearchParams(url.hash.split('?')[1] || ''):url.searchParams;
+      const time=source.get('t') || source.get('start');
+      if(/^\d{1,7}(?:s)?$/.test(time || ''))query.set('t',time);
+    }catch{}
+    return 'https://www.youtube.com/watch?'+query;
+  }
+  try {
+    const url=new URL(input);
+    if(url.protocol==='https:' && !url.username && !url.password && !url.port && ['youtube.com','www.youtube.com','m.youtube.com'].includes(url.hostname) && ['/', '/tv', '/tv/'].includes(url.pathname) && !url.search && !url.hash)
+      return mode==='web'?'https://www.youtube.com/':'https://www.youtube.com/tv';
+  }catch{}
+  return null;
+}
 export function hubVideos(state) {
   const byId = new Map();
   for (const item of [...(state.videos || []), ...(state.upNext || []).filter(item=>item.app==='youtube'),...syncedRecommendationRows(state,'youtube').flatMap(row=>row.items || [])]) {

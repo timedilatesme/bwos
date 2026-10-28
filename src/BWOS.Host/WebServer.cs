@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.WebSockets;
@@ -26,18 +27,24 @@ namespace Bwos
     {
         private readonly HttpListener listener = new HttpListener();
         private readonly int port;
+        private readonly int heartbeatMilliseconds;
         private readonly List<HttpListenerResponse> streams = new List<HttpListenerResponse>();
         private readonly object streamGate = new object();
         private readonly List<WebSocket> playbackSockets = new List<WebSocket>();
         private readonly object socketGate = new object();
+        private readonly object notificationGate = new object();
+        private readonly Dictionary<string, byte[]> notifications = new Dictionary<string, byte[]>();
+        private readonly AutoResetEvent notificationReady = new AutoResetEvent(false);
+        private volatile bool running;
         public int PlaybackClients { get { lock (socketGate) return playbackSockets.Count; } }
         public readonly string Token;
 
         public Func<Request, object> ApiHandler;
 
-        public WebServer(int port)
+        public WebServer(int port, int heartbeatMilliseconds = 20000)
         {
             this.port = port;
+            this.heartbeatMilliseconds = Math.Max(1, heartbeatMilliseconds);
             Token = LoadOrCreateToken();
             listener.Prefixes.Add("http://127.0.0.1:" + port + "/");
         }
@@ -70,9 +77,10 @@ namespace Bwos
         public void Start()
         {
             listener.Start();
+            running = true;
             var t = new Thread(delegate()
             {
-                while (listener.IsListening)
+                while (running)
                 {
                     try
                     {
@@ -81,7 +89,7 @@ namespace Bwos
                     }
                     catch (Exception ex)
                     {
-                        if (listener.IsListening) Log.Write("listener: " + ex.Message);
+                        if (running) Log.Write("listener: " + ex.Message);
                     }
                 }
             });
@@ -91,10 +99,16 @@ namespace Bwos
 
             var hb = new Thread(delegate()
             {
-                while (true)
+                var heartbeat = Stopwatch.StartNew();
+                while (running)
                 {
-                    Thread.Sleep(20000);
-                    Broadcast("ping", null);
+                    notificationReady.WaitOne((int)Math.Max(0, heartbeatMilliseconds - heartbeat.ElapsedMilliseconds));
+                    if (!running) return;
+                    // Busy voice/state streams must not postpone the playback worker's heartbeat.
+                    if (heartbeat.ElapsedMilliseconds >= heartbeatMilliseconds) { Broadcast("ping", null); heartbeat.Restart(); }
+                    KeyValuePair<string, byte[]>[] batch;
+                    lock (notificationGate) { batch = new List<KeyValuePair<string, byte[]>>(notifications).ToArray(); notifications.Clear(); }
+                    foreach (var item in batch) { if (!running) return; Deliver(item.Key, item.Value); }
                 }
             });
             hb.IsBackground = true;
@@ -103,32 +117,51 @@ namespace Bwos
 
         public void Stop()
         {
-            lock (socketGate) { foreach (var socket in playbackSockets) socket.Abort(); playbackSockets.Clear(); }
+            running = false;
+            notificationReady.Set();
+            lock (notificationGate) notifications.Clear();
+            HttpListenerResponse[] closingStreams;
+            WebSocket[] closingSockets;
+            lock (streamGate) { closingStreams = streams.ToArray(); streams.Clear(); }
+            lock (socketGate) { closingSockets = playbackSockets.ToArray(); playbackSockets.Clear(); }
+            // Abort can synchronously complete ReceiveAsync and remove a socket in its
+            // finally handler. Detach first; never enumerate the live list during cleanup.
+            foreach (var stream in closingStreams) { try { stream.Abort(); } catch { } }
+            foreach (var socket in closingSockets) { try { socket.Abort(); } catch { } }
             try { listener.Stop(); } catch { }
         }
 
         public void Broadcast(string evt, object data)
         {
+            if (!running) return;
+            byte[] bytes = Encoding.UTF8.GetBytes("event: " + evt + "\ndata: " + (data == null ? "{}" : Json.Serialize(data)) + "\n\n");
+            // Audio/controller callbacks never wait for a browser to read its stream.
+            // Only the latest snapshot notification of each kind is needed.
+            lock (notificationGate) notifications[evt] = bytes;
+            notificationReady.Set();
+        }
+
+        private void Deliver(string evt, byte[] bytes)
+        {
             if (evt == "playback" || evt == "ping")
             {
                 byte[] notification = Encoding.UTF8.GetBytes(evt);
-                lock (socketGate)
-                    for (int i = playbackSockets.Count - 1; i >= 0; i--)
+                WebSocket[] sockets;
+                lock (socketGate) sockets = playbackSockets.ToArray();
+                foreach (var socket in sockets)
                     {
-                        try { if (!playbackSockets[i].SendAsync(new ArraySegment<byte>(notification), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1000)) throw new IOException("Playback connection stalled"); }
-                        catch { playbackSockets[i].Abort(); playbackSockets.RemoveAt(i); }
+                        try { if (!socket.SendAsync(new ArraySegment<byte>(notification), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1000)) throw new IOException("Playback connection stalled"); }
+                        catch { lock (socketGate) playbackSockets.Remove(socket); try { socket.Abort(); } catch { } }
                     }
             }
-            string payload = "event: " + evt + "\ndata: " + (data == null ? "{}" : Json.Serialize(data)) + "\n\n";
-            byte[] bytes = Encoding.UTF8.GetBytes(payload);
             lock (streamGate)
             {
                 for (int i = streams.Count - 1; i >= 0; i--)
                 {
                     try
                     {
-                        streams[i].OutputStream.Write(bytes, 0, bytes.Length);
-                        streams[i].OutputStream.Flush();
+                        if (!streams[i].OutputStream.WriteAsync(bytes, 0, bytes.Length).Wait(1000))
+                            throw new IOException("Event connection stalled");
                     }
                     catch
                     {
@@ -194,7 +227,12 @@ namespace Bwos
                 byte[] hello = Encoding.UTF8.GetBytes("retry: 1500\nevent: hello\ndata: {}\n\n");
                 res.OutputStream.Write(hello, 0, hello.Length);
                 res.OutputStream.Flush();
-                lock (streamGate) streams.Add(res);
+                lock (streamGate)
+                {
+                    if (!running) { res.Abort(); return; }
+                    if (streams.Count >= 8) { try { streams[0].Abort(); } catch { } streams.RemoveAt(0); }
+                    streams.Add(res);
+                }
                 return; // keep open
             }
             if (!open && ctx.Request.Headers["X-BWOS-Token"] != Token)
@@ -238,7 +276,7 @@ namespace Bwos
             try
             {
                 var connected = await context.AcceptWebSocketAsync(null); socket = connected.WebSocket;
-                lock (socketGate) { if (playbackSockets.Count >= 4) { socket.Abort(); return; } playbackSockets.Add(socket); }
+                lock (socketGate) { if (!running || playbackSockets.Count >= 4) { socket.Abort(); return; } playbackSockets.Add(socket); }
                 var buffer = new byte[128];
                 while (socket.State == WebSocketState.Open)
                 {

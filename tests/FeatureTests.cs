@@ -126,6 +126,7 @@ namespace Bwos
 
         public static void Main(string[] args)
         {
+            if (args.Contains("--lifecycle")) { TestHostLifecycle(); Console.WriteLine("PASS: " + assertions + " host lifecycle assertions"); return; }
             if (args.Contains("--microphone")) { TestMicrophone(); return; }
             if (args.Contains("--stream-http")) { TestScreenHttp(); Console.WriteLine("PASS: " + assertions + " streaming HTTP assertions"); return; }
             if (args.Contains("--volume-read")) { Console.WriteLine("Windows volume: " + AudioVolume.Apply("read", "")); return; }
@@ -140,6 +141,7 @@ namespace Bwos
                 return;
             }
             TestAdapterCacheUpdate();
+            TestControllerProbe();
             TestScreenSharing();
             Assert(PhoneRemote.PlaybackAction("play") == "toggle", "Phone Play/Pause addresses playback rather than focus");
             Assert(PhoneRemote.PlaybackAction("seekback") == "seekBack" && PhoneRemote.PlaybackAction("seekforward") == "seekForward", "Phone seek buttons use explicit media commands");
@@ -464,6 +466,77 @@ namespace Bwos
                 Assert(string.IsNullOrWhiteSpace(engine.Transcribe(new byte[64000], "en")), "Silence is not a command");
             }
         }
+        private static void TestControllerProbe()
+        {
+            var now = DateTime.UtcNow;
+            var next = DateTime.MinValue;
+            Assert(GamepadService.ProbeDue(false, now, ref next), "A missing controller is probed immediately");
+            Assert(!GamepadService.ProbeDue(false, now.AddMilliseconds(950), ref next), "Missing-slot polling stays bounded");
+            Assert(GamepadService.ProbeDue(false, now.AddSeconds(1), ref next), "Controller reconnect is detected after one second even when every slot is empty");
+            Assert(GamepadService.ProbeDue(true, now, ref next), "Connected controllers are polled every frame");
+            var text = new Dictionary<string, object> { { "name", "A\\\"{quoted}, name" }, { "path", "C:\\Games\\" } };
+            Assert(Json.Str(Json.ParseObject(Json.Pretty(Json.Serialize(text))), "name", "") == (string)text["name"], "Pretty JSON preserves escaped quotes following literal backslashes");
+            string file = Path.Combine(Paths.AppDir, "atomic-test-" + Guid.NewGuid().ToString("N") + ".json");
+            try
+            {
+                AtomicFile.WriteText(file, "first");
+                AtomicFile.WriteText(file, "हिंदी 🎮");
+                Assert(File.ReadAllText(file) == "हिंदी 🎮", "Atomic settings replacement preserves UTF-8");
+                Assert(Directory.GetFiles(Paths.AppDir, Path.GetFileName(file) + ".*.tmp").Length == 0, "Atomic persistence leaves no temporary files");
+                File.SetAttributes(file, FileAttributes.ReadOnly);
+                bool failed = false;
+                try { AtomicFile.WriteText(file, "incomplete update"); } catch (IOException) { failed = true; } catch (UnauthorizedAccessException) { failed = true; }
+                Assert(failed && File.ReadAllText(file) == "हिंदी 🎮", "A failed replacement preserves the last complete settings file");
+                Assert(Directory.GetFiles(Paths.AppDir, Path.GetFileName(file) + ".*.tmp").Length == 0, "Failed persistence cleans up its temporary file");
+            }
+            finally { if (File.Exists(file)) { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); } }
+        }
+
+        private static void TestHostLifecycle()
+        {
+            // The test executable owns dist/verification/data. Never use the installed app's profile.
+            var config = new Config();
+            string original = File.ReadAllText(Paths.ConfigFile);
+            App app = null;
+            try
+            {
+                config.Set("port", 47931);
+                config.Set("trigger", "test-disabled");
+                config.Set("controllerBridge", false);
+                config.Set("voiceEnabled", false);
+                config.Set("castEnabled", false);
+                config.Set("airplayEnabled", false);
+                config.Set("watch", new object[0]);
+                app = new App(); app.Start();
+                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(app.Server.BaseUrl + "api/state");
+                request.Headers["X-BWOS-Token"] = app.Server.Token; request.Timeout = 5000;
+                using (var response = request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream()))
+                {
+                    var state = Json.ParseObject(reader.ReadToEnd());
+                    Assert(Json.Str(state, "version", "") == App.Version, "The actual host starts and returns an authenticated state snapshot");
+                    Assert(state.ContainsKey("games") && state.ContainsKey("devices") && state.ContainsKey("playback"), "Host state includes library, device, and playback services");
+                }
+                var apply = typeof(App).GetMethod("ApplySetting", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                Assert(Json.Bool((Dictionary<string, object>)apply.Invoke(app, new object[] { "youtubeInterface", "tv" }), "ok", false) && app.Config.YouTubeInterface == "tv", "TV interface remains selectable");
+                Assert(!Json.Bool((Dictionary<string, object>)apply.Invoke(app, new object[] { "youtubeInterface", "invalid" }), "ok", true) && app.Config.YouTubeInterface == "tv", "Invalid YouTube modes do not change the saved preference");
+                Assert(Json.Bool((Dictionary<string, object>)apply.Invoke(app, new object[] { "youtubeInterface", "web" }), "ok", false) && app.Config.YouTubeInterface == "web", "Standard YouTube mode can be restored");
+                var events = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(app.Server.BaseUrl + "api/events?t=" + app.Server.Token);
+                events.Timeout = 3000; events.ReadWriteTimeout = 3000;
+                using (var response = events.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream()))
+                {
+                    string line; do { line = reader.ReadLine(); } while (!string.IsNullOrEmpty(line));
+                    app.Server.Broadcast("home", null);
+                    Assert(reader.ReadLine() == "event: home", "Event notifications reach the retained UI");
+                    reader.ReadLine(); reader.ReadLine();
+                    app.Stop();
+                    bool closed = false;
+                    try { closed = reader.ReadLine() == null; } catch (IOException) { closed = true; }
+                    Assert(closed, "Host stop closes retained event streams instead of leaving them orphaned");
+                }
+            }
+            finally { if (app != null) app.Stop(); AtomicFile.WriteText(Paths.ConfigFile, original); }
+        }
+
         private static void TestPlaybackSocket()
         {
             var server = new WebServer(47921); server.Start();
@@ -488,6 +561,41 @@ namespace Bwos
                 }
             }
             finally { server.Stop(); }
+            var busy = new WebServer(47922, 250); busy.Start();
+            try
+            {
+                using (var socket = new System.Net.WebSockets.ClientWebSocket())
+                {
+                    socket.ConnectAsync(new Uri("ws://127.0.0.1:47922/api/playback-events?t=" + busy.Token), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+                    var buffer = new byte[128];
+                    var read = socket.ReceiveAsync(new ArraySegment<byte>(buffer), System.Threading.CancellationToken.None);
+                    var elapsed = System.Diagnostics.Stopwatch.StartNew();
+                    while (!read.IsCompleted && elapsed.ElapsedMilliseconds < 2000)
+                    {
+                        busy.Broadcast("voice", new { level = 1 });
+                        System.Threading.Thread.Sleep(20);
+                    }
+                    Assert(read.IsCompleted, "Busy event traffic does not starve the playback heartbeat");
+                    Assert(System.Text.Encoding.UTF8.GetString(buffer, 0, read.Result.Count) == "ping", "Heartbeat reaches the extension during continuous voice updates");
+                    socket.Abort();
+                }
+            }
+            finally { busy.Stop(); }
+            var closing = new WebServer(47923); closing.Start();
+            using (var socket = new System.Net.WebSockets.ClientWebSocket())
+            {
+                try
+                {
+                    socket.ConnectAsync(new Uri("ws://127.0.0.1:47923/api/playback-events?t=" + closing.Token), System.Threading.CancellationToken.None).GetAwaiter().GetResult();
+                    var read = socket.ReceiveAsync(new ArraySegment<byte>(new byte[128]), System.Threading.CancellationToken.None);
+                    Assert(closing.PlaybackClients == 1, "An active playback socket is registered before shutdown");
+                    closing.Stop();
+                    Assert(closing.PlaybackClients == 0, "Shutdown detaches sockets before abort callbacks can mutate their collection");
+                    try { read.Wait(3000); } catch (AggregateException) { }
+                    Assert(read.IsCompleted, "Shutdown closes an active browser connection without waiting for the browser to disconnect");
+                }
+                finally { socket.Abort(); closing.Stop(); }
+            }
         }
     }
 }

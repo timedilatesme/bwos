@@ -260,7 +260,7 @@ namespace Bwos
         /// <summary>Browser process ids for the shell. The input bridge calls this ~120×/s, so the WMI lookup is cached.</summary>
         private List<int> ShellPids(bool fresh)
         {
-            bool stale = shellPids.Count == 0 || (DateTime.UtcNow - shellPidsAt).TotalSeconds > 5;
+            bool stale = (DateTime.UtcNow - shellPidsAt).TotalSeconds > 5;
             if (fresh && shellPids.Any(pid => !Alive(pid))) stale = true;
             if (stale)
             {

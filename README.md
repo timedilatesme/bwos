@@ -1,4 +1,7 @@
-> The 2.0.0 release is withdrawn. The local default is restored to the established 1.8.1 app. The repaired session core is an unpublished preview built separately with `replacement\build.ps1 -Test`, retaining the original Liquid Glass UI and controller engine. Physical controller/provider testing is still required before promotion.
+> The default app is 1.8.2, based on the established Liquid Glass UI and controller engine. The separate session-core preview remains unpublished and can be built with `replacement\build.ps1 -Test`. Physical controller/provider testing is still required before promoting that preview.
+
+The default app received a [stability pass on October 18, 2026](docs/STABILITY_PASS_2026-10-18.md), covering input, focus, refresh performance, async failures, persistence, and host lifecycle, with repeatable regression checks.
+The [October 28 follow-up](docs/STABILITY_PASS_2026-10-28.md) repairs YouTube startup, keeps Home responsive during stalled playback work, fixes a reproduced socket-shutdown crash, and verifies real YouTube playback with the production UI and extension.
 <p align="center"><img src="assets/bwos.png" width="128" alt="BWOS icon"></p>
 
 <h1 align="center">BWOS</h1>
@@ -17,15 +20,15 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
 | ![For You: recommendations from your services, with Up Next](docs/media/foryou.jpg) | ![Games from Steam, Epic, GOG and Ubisoft in one library](docs/media/games.jpg) |
 | **For You:** your services' catalogue, Up Next across apps | **Games:** Steam, Epic, GOG and Ubisoft in one place |
 | ![Streaming and free apps as tvOS-style icons](docs/media/apps.jpg) | ![Controller panel](docs/media/controller.jpg) |
-| **Apps:** Netflix, Prime Video, YouTube TV and free services, inside BWOS | **Controller:** pads, battery, home button and button map |
+| **Apps:** Netflix, Prime Video, YouTube and free services, inside BWOS | **Controller:** pads, battery, home button and button map |
 
 ## Features
 
-**BWOS browsing and playback (1.8.1)**
-- YouTube recommendations, saved videos, search results and Continue Watching open the same YouTube TV session. Temporary, muted recommendation tabs are excluded from live app selection, and opening a player repairs any tab mute set by BWOS itself.
+**BWOS browsing and playback (1.8.2)**
+- YouTube keeps its TV interface by default, including recommendations, saved videos, search results and Continue Watching. TV watch links now receive the same compatibility rule as the TV landing page, avoiding the desktop redirect. **Settings → Connections → YouTube interface** offers Standard as an optional web-player fallback. Temporary, muted recommendation tabs are excluded from live app selection, and opening a player repairs any tab mute set by BWOS itself.
 - **Stream BWOS to a Mac, phone or browser:** Settings → Connections → Stream BWOS. Choose an entire screen and enable Share system audio, then open its temporary link or scan the QR on your other device. The browser receives screen and audio through WebRTC and provides arrows, Select, Back, Home, playback, volume and text entry. Select Enable sound on the viewer. This is free and needs no API key. Windows may ask you to allow BWOS through the firewall on private networks. Use a trusted local network; protected streaming video may be black. Stop sharing revokes the session. Links pair one viewer, expire after ten minutes and are separate from saved phone pairings.
 - Provider logos fill their For You filter tiles. Selecting search opens a controller-friendly keyboard; physical/phone typing also works, including Hindi text.
-- Sparse YouTube Home collection also tries rendered cards from YouTube TV in the same muted discovery tab. Apps still opens original YouTube TV directly. Feeds remain bounded snapshots of what the service renders.
+- Sparse YouTube Home collection also tries rendered cards from YouTube TV in the same muted discovery tab. Feeds remain bounded snapshots of what the service renders; collection never changes the live player’s interface.
 - Wake listening decodes continuous sound in four-second chunks, keeping overlap across boundaries. Dictation receives service-name spelling hints and supports explicit common wake transcriptions. Settings shows missed-wake transcripts. Music and microphone quality can still affect recognition.
 - For You uses compact app-logo filters with accessible names. Discovery recognizes Netflix browse/title identifiers and modern YouTube titles, pages lazy and horizontal shelves, and preserves fuller feeds when a refresh is incomplete.
 - Cleaner recommendation pages: one service strip, compact source information, secondary actions in **More**, readable titles on every card, and no identical repeated shelves. A title with one provider launches directly; multiple providers still offer a choice.
@@ -37,24 +40,24 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
 - Search in **For You** reads rendered YouTube, Netflix and Prime Video search results into BWOS. Enter and the Search button both submit; All services searches the supported visible services. Results are temporary and never replace Home recommendations. No API key is required. Sign-in/profile selection may be needed in the original app.
 - YouTube recommendations use a navigable video grid. Discovery reads multiple lazy-loaded batches from a muted temporary tab, preserving virtualized cards, with **Load more recommendations** and a bounded 360-card snapshot. It does not expose an unlimited provider API feed. Short Prime collections combine into useful rows rather than one card per row.
 - Shared glass styling uses translucent chrome, restrained edge highlights and readable dark surfaces. Blur is limited to a few surfaces rather than hundreds of video cards.
-- Opening a recommendation or saved YouTube video fills the entire window, with YouTube's own controls over the video and no separate BWOS bar. A/Cross or X/Square toggles playback; left/right skips 10 seconds. Up enters the native timeline, Down reaches native buttons, and Menu/Y opens native settings. D-pad navigates and A/Cross selects; Back closes menus, then leaves controls, then docks playback. Bumpers move through the current shelf.
+- Opening a YouTube video uses the selected interface in its retained service tab. The streaming controller adapter supports video playback, seeking and returning Home. The embedded player also supports YouTube’s native timeline and settings controls.
 - The phone remote has direct Play/Pause and ±10-second controls, routed to playback rather than UI focus.
-- YouTube video cards open the original YouTube TV player, including its recommendations and native playback controls. BWOS keeps that service tab alive when you return Home.
+- BWOS keeps the YouTube service tab alive when you return Home. Home activates without waiting for a slow player snapshot, playback command, or host report; stale opening requests cannot steal focus back afterward.
 - Press Home while an embedded video plays to dock the same visible player. **X / Square** enters its controls; D-pad chooses Play/Pause, Expand, Watch on YouTube or Close. Back leaves the controls. Hidden or covered embedded playback pauses.
 - Netflix/Prime and other film catalogues use BWOS's existing availability cache. Filter titles and genres, choose Movies/Series, then select a provider to watch. Subscriptions, sign-in and protected playback remain on the provider's site.
-- Videos that refuse embedding have an explicit **Open YouTube TV** fallback. The direct TV adapter remains a compatibility workaround, so provider availability is not guaranteed.
+- Videos that refuse embedding have an explicit **Open YouTube** fallback using the selected interface. Provider availability still depends on YouTube and the browser session.
 
 **Voice, background playback and devices**
 - Free local Whisper recognition for English/Hindi, automatic NVIDIA acceleration and a smaller CPU fallback. Enabling **Settings → Voice → Voice control** installs the required files once; no accounts or API keys.
 - Local Windows echo cancellation and noise suppression reduce speaker audio entering the microphone; Settings reports whether processing is active or basic capture is being used.
 - A transient Windows assistant appears over other apps for accepted commands, responds to microphone activity and speaks acknowledgements with installed Windows voices.
 - **Hey console** is the default wake phrase for new installs. Say it with a command, or give follow-up commands for 12 seconds. Direct listening remains optional.
-- “Open YouTube”, “Launch [game]”, “Show numbers”, “Select three”, and “Search YouTube for …”. Inside YouTube, “Search for …” uses its TV search route and keeps the TV interface.
+- “Open YouTube”, “Launch [game]”, “Show numbers”, “Select three”, and “Search YouTube for …”. Inside YouTube, “Search for …” stays in the current standard or TV interface.
 - “Browse YouTube” opens the BWOS library; “Open YouTube app” opens the service directly. Plain “Search for …” filters the BWOS catalogue/library while on BWOS screens.
 - Return Home in the same fullscreen window while a media tab stays alive in the background. A compact **Now Playing** cloud shows an animation, elapsed time and progress, with pause/play, reopen and stop. A draggable, collapsible desktop companion appears when another app is in front. Supports HTML media in BWOS streaming apps; some providers pause hidden players.
 - Home stays loaded, and reopening a service reuses its tab. Press **X / Square** to focus floating controls, D-pad to navigate, **A / Cross** to select, and **B / Circle** to return. A top-bar **Now playing** entry is also available.
 - Voice supports precise volume, mute/unmute, seeking, restart, stop/reopen, player controls, keyboard and explicit page retry. Next/previous and subtitles depend on the provider exposing controls.
-- YouTube retains its TV interface; intrusive response rewriting and ad seeking have been removed for stability. Ads may play.
+- YouTube uses its normal player responses and media requests. Ads may play.
 - YouTube TV uses a compatibility identity only for TV documents. Playback requests keep native browser headers; failed players expose **Retry**, with bounded local error-code diagnostics. This browser adapter needs maintenance as YouTube changes; it is not a certified native TV app.
 - A **Devices** screen for controllers, paired Bluetooth devices, and driver-supported speaker/headphone connect/disconnect controls.
 - See [voice commands, setup and device limitations](docs/VOICE_AND_DEVICES.md).
@@ -72,7 +75,7 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
   starts, and comes back when a game it launched closes.
 
 **Watching**
-- **Browse in BWOS, open services when needed.** Service tiles open BWOS browsing first. Their **Open app** option opens Netflix, Prime Video, YouTube, Einthusan, Tubi, Pluto TV or Plex in the same persistent browser profile.
+- **Browse in BWOS, open services when needed.** **Apps** tiles open each service directly in the persistent browser profile. **For You** provides recommendations and browsing with an **Open app** option.
 - **A controller layer for every site.** The bundled `bwos-tv` extension adds:
   - A TV focus ring you move with the D-pad, including onto posters built as plain clickable `<div>`s.
   - A = select, B = back.
@@ -84,7 +87,7 @@ driven with the controller, and the frosted-glass design is inspired by tvOS.
   - **Up Next** follows each show across services, with progress bars, and resumes where you stopped.
   - **"Because you watched …"** rows appear on their own.
   - Reality TV is filtered out.
-- **YouTube TV.** YouTube opens in its 10-foot TV interface, with its normal player and ad handling.
+- **YouTube TV.** YouTube opens in its television layout with its normal player and ad handling. Standard web playback is available as an optional fallback in Settings. A fresh session can require profile selection or **Watch as guest**.
 - **Your phone as a remote.** Scan the QR code once (**Settings → Phone remote**, or **Menu** in any app) and
   your phone becomes an Apple TV-style remote: swipe on the touch surface to move, tap to select, with Back,
   Home, Play/Pause and volume, plus a keyboard tab for sign-ins and searches. The phone stays paired; add the

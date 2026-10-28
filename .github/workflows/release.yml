@@ -28,7 +28,7 @@ jobs:
           node-version: '22'
       - name: Validate version and release notes
         run: |
-          $version = (Select-String -Path 'replacement/host/App.cs' -Pattern 'Version = "([^"]+)"').Matches[0].Groups[1].Value
+          $version = (Select-String -Path 'src/BWOS.Host/App.cs' -Pattern 'Version = "([^"]+)"').Matches[0].Groups[1].Value
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'The tag must match the application version.' }
           if (-not (Test-Path "docs/RELEASE_$version.md")) { throw 'Release notes are missing.' }
           "BWOS_RELEASE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -45,7 +45,7 @@ jobs:
           node --test @coreTests
           if ($LASTEXITCODE -ne 0) { throw 'Replacement checks failed.' }
       - name: Build portable Windows package
-        run: .\build.ps1 -Test -Zip
+        run: .\build.ps1 -Zip
       - name: Verify package and write checksum
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
