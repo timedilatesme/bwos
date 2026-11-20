@@ -122,7 +122,6 @@ async function activateHome(sourceTab, base, token) {
   sendToTab(homeTab.id, { type: 'shell-home' }, { frameId: 0 }, 1000).catch(() => {});
 }
 async function openService(url, sender, intent) {
-  if (!currentNavigation(intent)) return { ok: false, error: 'App opening was cancelled by a newer navigation.' };
   if (/^https:\/\/www\.youtube\.com\/tv(?:[/?#]|$)/.test(url)) await tvCompatibilityReady;
   const { home } = await settings();
   if (!home || sender.frameId !== 0 || !sender.tab?.url?.startsWith(home)) throw new Error('Open apps from BWOS Home');
@@ -133,7 +132,8 @@ async function openService(url, sender, intent) {
   const existing = candidates.find(tab => all[tab.id] && !all[tab.id].data.paused) || candidates.sort((a, b) => b.id - a.id)[0];
   // Opening the app's landing page resumes its existing session. An explicit search/title
   // request can navigate the retained tab, but never creates another player for that service.
-  const landing = !parsed.search && !parsed.hash && ['/', '/tv', '/tv/'].includes(parsed.pathname);
+  const landing = !parsed.search && !parsed.hash && (['/', '/tv', '/tv/'].includes(parsed.pathname) ||
+    (key === 'netflix.com' && /^\/browse\/?$/.test(parsed.pathname)));
   let destination = url, repairTv = false, repairWeb = false;
   if (existing && landing && parsed.hostname === 'www.youtube.com' && /^\/tv\/?$/.test(parsed.pathname)) {
     const retained = new URL(existing.pendingUrl || existing.url);
@@ -156,28 +156,28 @@ async function openService(url, sender, intent) {
       destination = 'https://www.youtube.com/watch?' + watch;
     }
   }
-  const tab = await navigate(intent, async () => {
-    await chrome.tabs.update(sender.tab.id, { autoDiscardable: false });
-    let selected;
-    if (existing) selected = await chrome.tabs.update(existing.id, { active: true, autoDiscardable: false, ...((!landing || repairTv || repairWeb) && existing.url !== destination ? { url: destination } : {}) });
-    else selected = await chrome.tabs.create({ windowId: sender.tab.windowId, url, active: true });
-    await chrome.tabs.update(selected.id, { autoDiscardable: false });
+  if (!currentNavigation(intent)) return null;
+  await chrome.tabs.update(sender.tab.id, { autoDiscardable: false });
+  if (!currentNavigation(intent)) return null;
+  const tab = existing
+    ? await chrome.tabs.update(existing.id, { active: true, autoDiscardable: false, ...((!landing || repairTv || repairWeb) && existing.url !== destination ? { url: destination } : {}) })
+    : await chrome.tabs.create({ windowId: sender.tab.windowId, url, active: true });
+  if (!existing) await chrome.tabs.update(tab.id, { autoDiscardable: false });
   // Older adapters could promote a muted collector into the live player. Repair
   // only our own tab mute on explicit opening; preserve user/other-extension mutes.
-    if (selected.mutedInfo?.muted && selected.mutedInfo.reason === 'extension' && selected.mutedInfo.extensionId === chrome.runtime.id)
-      await chrome.tabs.update(selected.id, { muted: false });
-    await updatePlayers(latest => {
-      if (!landing && existing?.url !== destination) delete latest[selected.id];
-      else if (latest[selected.id]) {
-        latest[selected.id].background = false;
-        if (repairTv || repairWeb) latest[selected.id].data.url = destination;
-      }
-    });
-    await chrome.windows.update(selected.windowId, { state: 'fullscreen', focused: true });
-    return selected;
+  if (tab.mutedInfo?.muted && tab.mutedInfo.reason === 'extension' && tab.mutedInfo.extensionId === chrome.runtime.id)
+    await chrome.tabs.update(tab.id, { muted: false });
+  const player = await updatePlayers(latest => {
+    if (!landing && existing?.url !== destination) delete latest[tab.id];
+    else if (latest[tab.id]) {
+      latest[tab.id].background = false;
+      if (repairTv || repairWeb) latest[tab.id].data.url = destination;
+    }
+    return latest[tab.id];
   });
-  if (!tab || !currentNavigation(intent)) return { ok: false, error: 'App opening was cancelled by a newer navigation.' };
-  const player = (await players())[tab.id];
+  if (!currentNavigation(intent)) return null;
+  await chrome.windows.update(tab.windowId, { state: 'fullscreen', focused: true });
+  if (!currentNavigation(intent)) return null;
   if (player) reportPlayer(tab.id, player).catch(error => diagnose('player', error));
   reportContext({ ...tab, active: true }).catch(error => diagnose('context', error));
   return { ok: true };
@@ -506,7 +506,10 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
         reply({ ok: false, error: 'Open apps from BWOS Home' }); return false;
       }
       const intent = beginNavigation(sender.tab?.windowId);
-      schedule(() => openService(msg.url, sender, intent)).then(reply, error => reply({ ok: false, error: error.message }));
+      navigate(intent, () => openService(msg.url, sender, intent)).then(
+        result => reply(result || { ok: false, error: 'App opening was cancelled by a newer navigation.' }),
+        error => reply({ ok: false, error: error.message })
+      );
       return true;
     }
     case 'media-intent':

@@ -53,9 +53,10 @@ await page.addInitScript(()=>{
   sessionStorage.setItem('bwos.intro','1');localStorage.setItem('bwos.ambient','off');
   globalThis.testPad={index:0,id:'Xbox test controller',connected:true,mapping:'standard',axes:[0,0],buttons:Array.from({length:17},()=>({pressed:false,value:0}))};
   Object.defineProperty(navigator,'getGamepads',{value:()=>[testPad]});document.hasFocus=()=>true;
+  globalThis.openedServices=[];
   addEventListener('message',event=>{
     if(event.source!==window || event.origin!==location.origin || !['bwos-open-service','bwos-sync-recommendations','bwos-search-recommendations'].includes(event.data?.type))return;
-    if(event.data.type==='bwos-open-service')(globalThis.openedServices ||= []).push(event.data.url);
+    if(event.data.type==='bwos-open-service')globalThis.openedServices.push(event.data.url);
     window.postMessage({type:'bwos-open-result',requestId:event.data.requestId,result:{ok:true,count:0,rows:[]}},location.origin);
   });
 });

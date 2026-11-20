@@ -214,8 +214,25 @@ await flush();
 assert.equal(deadlines.size, 1, 'A stalled player gets a bounded response deadline');
 assert.equal((await send({type:'home'},tabs.get(43))).ok,true,'Home works while a playback command is still stalled');
 assert.equal(tabs.get(50).active,true,'Stalled controls cannot postpone Home activation');
+const stalledControlDeadline = [...deadlines.keys()][0];
+for (const url of ['https://www.youtube.com/tv', 'https://www.netflix.com/browse', 'https://www.primevideo.com/']) {
+  let opened;
+  const opening = send({ type: 'open-service', url }, tabs.get(50)).then(result => { opened = result; });
+  await flush();
+  assert.equal(opened?.ok, true, `${url} opens while a playback command is waiting on another tab`);
+  await opening;
+  const active = [...tabs.values()].find(tab => tab.windowId === tabs.get(50).windowId && tab.active);
+  if (url === 'https://www.netflix.com/browse') {
+    assert.equal(active.id, 43, 'Netflix reopens its existing tab inside the BWOS window');
+    assert.equal(active.url, 'https://www.netflix.com/watch/film', 'The Netflix tile preserves the current title');
+  } else {
+    assert.equal(active.url, url, 'The service opens inside the BWOS window');
+  }
+  assert.equal((await send({ type: 'home' }, active)).ok, true, 'Home remains available after opening the service');
+}
 await flush();
-[...deadlines.values()][0](); deadlines.clear();
+assert.ok(deadlines.has(stalledControlDeadline), 'App launches finish before the stalled command expires');
+deadlines.get(stalledControlDeadline)(); deadlines.delete(stalledControlDeadline);
 await stalledControl;
 assert.ok(errors.some(error => error.id === '43'), 'Stalled playback produces a visible error');
 chrome.tabs.sendMessage = originalSend;
